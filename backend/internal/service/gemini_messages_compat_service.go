@@ -2749,9 +2749,10 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	tierID := account.GeminiTierID()
 	isCodeAssist := account.IsGeminiCodeAssist()
 	isSlidingWindow := isCodeAssist || oauthType == "google_one"
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 
 	// 服务端过载 (MODEL_CAPACITY_EXHAUSTED): 与账号类型无关，统一走模型级短冷却
-	if looksLikeGeminiServerOverload(extractUpstreamErrorMessage(body)) {
+	if looksLikeGeminiServerOverload(upstreamMsg) {
 		modelKey := account.GetMappedModel(requestedModel)
 		resetTime := time.Now().Add(geminiOverloadCooldown)
 		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): server overload, cooldown %v",
@@ -2761,6 +2762,12 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 			s.updateGeminiModelRateLimitInCache(ctx, account, modelKey, resetTime)
 		}
 		return
+	}
+
+	if upstreamMsg != "" {
+		sanitizedUpstreamMsg := truncateString(sanitizeUpstreamErrorMessage(upstreamMsg), 512)
+		log.Printf("[Gemini 429] Account %d (oauth_type=%s, tier=%s): non-overload upstream message=%q",
+			account.ID, oauthType, tierID, sanitizedUpstreamMsg)
 	}
 
 	// AI Studio / API Key: 固定每日配额，保持原有账号级限流逻辑
