@@ -791,10 +791,21 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				break
 			}
-			if resp.StatusCode == 429 && !rateLimitMarked {
-				// Mark as rate-limited early so concurrent requests avoid this account.
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
-				rateLimitMarked = true
+			if resp.StatusCode == 429 {
+				if !rateLimitMarked {
+					// Mark as rate-limited early so concurrent requests avoid this account.
+					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+					rateLimitMarked = true
+				}
+				if fastFailover, reason := shouldFastFailoverGemini429(respBody); fastFailover {
+					log.Printf("[Gemini 429] Account %d: fast failover reason=%s, skip in-account retry", account.ID, reason)
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break
+				}
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -1211,9 +1222,20 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}
 				break
 			}
-			if resp.StatusCode == 429 && !rateLimitMarked {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
-				rateLimitMarked = true
+			if resp.StatusCode == 429 {
+				if !rateLimitMarked {
+					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+					rateLimitMarked = true
+				}
+				if fastFailover, reason := shouldFastFailoverGemini429(respBody); fastFailover {
+					log.Printf("[Gemini 429] Account %d: fast failover reason=%s, skip in-account retry", account.ID, reason)
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break
+				}
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -2649,7 +2671,7 @@ type gemini429Info struct {
 	isDailyQuota    bool          // message contains "per day"
 	hasResetDelay   bool          // quotaResetDelay was present in metadata (distinguishes 0s from absent)
 	quotaResetDelay time.Duration // from error.details[].metadata.quotaResetDelay
-	retryInSeconds  time.Duration // from "Please retry in Xs" or "reset after Xs"
+	retryDelay      time.Duration // from "Please retry in Xs" or "reset after Xs"
 }
 
 const (
@@ -2692,10 +2714,29 @@ func parseGemini429Info(body []byte) gemini429Info {
 	matches := retryInRegex.FindStringSubmatch(string(body))
 	if len(matches) == 2 {
 		if dur, err := time.ParseDuration(matches[1] + "s"); err == nil {
-			info.retryInSeconds = dur
+			info.retryDelay = dur
 		}
 	}
 	return info
+}
+
+func shouldFastFailoverGemini429(body []byte) (bool, string) {
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+	if looksLikeGeminiServerOverload(upstreamMsg) {
+		return false, "server_overload"
+	}
+
+	info := parseGemini429Info(body)
+	switch {
+	case info.isDailyQuota:
+		return true, "daily_quota"
+	case info.hasResetDelay:
+		return true, "quota_reset_delay"
+	case info.retryDelay > 0:
+		return true, "retry_in"
+	default:
+		return false, "unknown"
+	}
 }
 
 func looksLikeGeminiServerOverload(message string) bool {
@@ -2815,14 +2856,14 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 		resetTime = time.Now().Add(delay)
 		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): quota reset, quotaResetDelay=%v (applied=%v)",
 			account.ID, modelKey, oauthType, tierID, info.quotaResetDelay.Truncate(time.Second), delay)
-	case info.retryInSeconds > 0:
-		delay := info.retryInSeconds
+	case info.retryDelay > 0:
+		delay := info.retryDelay
 		if delay < geminiMinModelCooldown {
 			delay = geminiMinModelCooldown
 		}
 		resetTime = time.Now().Add(delay)
 		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): retryIn=%v (applied=%v)",
-			account.ID, modelKey, oauthType, tierID, info.retryInSeconds.Truncate(time.Second), delay)
+			account.ID, modelKey, oauthType, tierID, info.retryDelay.Truncate(time.Second), delay)
 	default:
 		cooldown := s.geminiTierCooldown(ctx, account, tierID)
 		resetTime = time.Now().Add(cooldown)
