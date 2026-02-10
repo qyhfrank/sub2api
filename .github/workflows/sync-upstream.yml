@@ -1,0 +1,170 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream (tags + branches)
+        run: |
+          git remote add upstream https://github.com/Wei-Shaw/sub2api.git 2>/dev/null || true
+          git fetch upstream main --tags
+
+      - name: Check for new tags
+        id: check
+        run: |
+          # Find the latest upstream v* tag (by version sort)
+          UPSTREAM_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "No upstream tags found."
+            echo "status=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Latest upstream tag: $UPSTREAM_TAG"
+
+          # Check if this tag's commit is already in our main branch
+          TAG_COMMIT=$(git rev-list -n 1 "$UPSTREAM_TAG")
+          if git merge-base --is-ancestor "$TAG_COMMIT" HEAD; then
+            echo "Already up to date with $UPSTREAM_TAG"
+            echo "status=skip" >> "$GITHUB_OUTPUT"
+          else
+            # Count how many commits we're behind
+            COMMITS=$(git rev-list HEAD.."$TAG_COMMIT" --count)
+            echo "New tag $UPSTREAM_TAG detected ($COMMITS commits behind)"
+            echo "status=new-tag" >> "$GITHUB_OUTPUT"
+            echo "tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+            echo "commits=$COMMITS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt merge
+        if: steps.check.outputs.status == 'new-tag'
+        id: merge
+        run: |
+          TAG=${{ steps.check.outputs.tag }}
+          echo "Merging upstream tag $TAG into main..."
+          if git merge "$TAG" --no-edit 2>&1; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            echo "Merge conflicts detected:"
+            git diff --name-only --diff-filter=U
+          fi
+
+      # Clean merge: push directly + sync tag
+      - name: Push clean merge
+        if: steps.merge.outputs.result == 'clean'
+        run: |
+          git push origin main
+          git push origin ${{ steps.check.outputs.tag }}
+
+      # Conflicts: use Claude Code to resolve
+      - name: Setup Node.js
+        if: steps.merge.outputs.result == 'conflict'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code
+        if: steps.merge.outputs.result == 'conflict'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Resolve conflicts with Claude Code
+        if: steps.merge.outputs.result == 'conflict'
+        id: resolve
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ""
+        run: |
+          CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+          echo "Conflicted files: $CONFLICTS"
+
+          claude -p "This repository has merge conflicts after merging upstream tag ${{ steps.check.outputs.tag }}.
+
+          Conflicted files: $CONFLICTS
+
+          Instructions:
+          1. Read each conflicted file to understand both sides of the conflict
+          2. Resolve the conflict markers (<<<<<<< ======= >>>>>>>) intelligently:
+             - Keep both changes when they don't conflict semantically
+             - Prefer upstream changes for general improvements
+             - Preserve local customizations (look at the commit messages for context)
+          3. After resolving each file, run: git add <filename>
+          4. Verify no conflict markers remain: grep -rn '<<<<<<< ' on the resolved files
+
+          Do NOT run git commit. Just resolve and stage the files." \
+            --model claude-sonnet-4-5-20250929 \
+            --max-turns 30
+
+          # Verify all conflicts are resolved
+          REMAINING=$(git diff --name-only --diff-filter=U)
+          if [ -n "$REMAINING" ]; then
+            echo "::error::Unresolved conflicts remain in: $REMAINING"
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Verify no conflict markers left in staged files
+          STAGED=$(git diff --cached --name-only)
+          if grep -rl '<<<<<<< ' $STAGED 2>/dev/null; then
+            echo "::error::Conflict markers still present in resolved files"
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "resolved=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR for resolved conflicts
+        if: steps.resolve.outputs.resolved == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.check.outputs.tag }}
+          COMMITS=${{ steps.check.outputs.commits }}
+          BRANCH="sync-upstream/${TAG}"
+
+          git checkout -b "$BRANCH"
+          git commit --no-edit
+          git push origin "$BRANCH"
+
+          UPSTREAM_LOG=$(git log HEAD~${COMMITS}..HEAD --oneline --no-merges | head -20)
+          CHANGED_FILES=$(git diff --name-only HEAD~1)
+
+          gh pr create \
+            --title "Sync upstream ${TAG} (AI-resolved conflicts)" \
+            --body "$(cat <<EOF
+          ## Summary
+          Upstream released \`${TAG}\`. Merge conflicts were resolved by Claude Code.
+
+          **Please review the conflict resolutions carefully before merging.**
+
+          ### Upstream commits included
+          ${UPSTREAM_LOG}
+
+          ### Files with resolved conflicts
+          ${CHANGED_FILES}
+          EOF
+          )" \
+            --head "$BRANCH" \
+            --base main
