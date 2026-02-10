@@ -291,7 +291,7 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 					handleErrorCalled = false
 					goto verify
 				case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-					svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody)
+					svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody, "gemini-2.5-pro")
 					handleErrorCalled = true
 					gotFailover = true
 					goto verify
@@ -299,7 +299,7 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 			}
 
 			// ErrorPolicyNone → original logic
-			svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody)
+			svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody, "gemini-2.5-pro")
 			handleErrorCalled = true
 			if svc.shouldFailoverGeminiUpstreamError(statusCode) {
 				gotFailover = true
@@ -352,7 +352,7 @@ func TestGeminiErrorPolicy_NilRateLimitService(t *testing.T) {
 
 	// handleGeminiUpstreamError should not panic with nil rateLimitService
 	require.NotPanics(t, func() {
-		svc.handleGeminiUpstreamError(ctx, account, 500, http.Header{}, []byte(`error`))
+		svc.handleGeminiUpstreamError(ctx, account, 500, http.Header{}, []byte(`error`), "gemini-2.5-pro")
 	})
 }
 

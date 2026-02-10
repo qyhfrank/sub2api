@@ -665,6 +665,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	var resp *http.Response
 	signatureRetryStage := 0
+	rateLimitMarked := false
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
@@ -790,9 +791,10 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				break
 			}
-			if resp.StatusCode == 429 {
+			if resp.StatusCode == 429 && !rateLimitMarked {
 				// Mark as rate-limited early so concurrent requests avoid this account.
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				rateLimitMarked = true
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -849,7 +851,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				return nil, s.writeGeminiMappedError(c, account, http.StatusInternalServerError, upstreamReqID, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				if !rateLimitMarked {
+					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				}
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -879,7 +883,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if !rateLimitMarked {
+			s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		}
 		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
 			upstreamReqID := resp.Header.Get(requestIDHeader)
 			if upstreamReqID == "" {
@@ -1132,6 +1138,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	}
 
 	var resp *http.Response
+	rateLimitMarked := false
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
@@ -1204,8 +1211,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}
 				break
 			}
-			if resp.StatusCode == 429 {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			if resp.StatusCode == 429 && !rateLimitMarked {
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				rateLimitMarked = true
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -1302,7 +1310,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				c.Data(http.StatusInternalServerError, contentType, respBody)
 				return nil, fmt.Errorf("gemini upstream error: %d (skipped by error policy)", resp.StatusCode)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				if !rateLimitMarked {
+					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				}
 				evBody := unwrapIfNeeded(isOAuth, respBody)
 				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1329,7 +1339,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if !rateLimitMarked {
+			s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		}
 		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
 			evBody := unwrapIfNeeded(isOAuth, respBody)
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
@@ -2632,7 +2644,95 @@ func asInt(v any) (int, bool) {
 	}
 }
 
-func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte) {
+// gemini429Info holds parsed fields from a Gemini 429 response body.
+type gemini429Info struct {
+	isDailyQuota    bool          // message contains "per day"
+	hasResetDelay   bool          // quotaResetDelay was present in metadata (distinguishes 0s from absent)
+	quotaResetDelay time.Duration // from error.details[].metadata.quotaResetDelay
+	retryInSeconds  time.Duration // from "Please retry in Xs" or "reset after Xs"
+}
+
+const (
+	// geminiMinModelCooldown prevents setting model-level rate limits shorter than
+	// the DB write + cache sync latency. A 0s or 1s limit expires before it takes effect.
+	geminiMinModelCooldown = 5 * time.Second
+	// geminiOverloadCooldown is applied when the server reports "No capacity available".
+	// This is a transient server-side issue (not user quota), typically resolves in seconds.
+	geminiOverloadCooldown = 30 * time.Second
+)
+
+// parseGemini429Info extracts rate limit information from a Gemini 429 response.
+func parseGemini429Info(body []byte) gemini429Info {
+	var info gemini429Info
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		if errObj, ok := parsed["error"].(map[string]any); ok {
+			if msg, ok := errObj["message"].(string); ok {
+				info.isDailyQuota = looksLikeGeminiDailyQuota(msg)
+			}
+			if details, ok := errObj["details"].([]any); ok {
+				for _, d := range details {
+					dm, ok := d.(map[string]any)
+					if !ok {
+						continue
+					}
+					if meta, ok := dm["metadata"].(map[string]any); ok {
+						if v, ok := meta["quotaResetDelay"].(string); ok {
+							if dur, err := time.ParseDuration(v); err == nil {
+								info.hasResetDelay = true
+								info.quotaResetDelay = dur
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// Regex fallback: always runs regardless of JSON parse result
+	matches := retryInRegex.FindStringSubmatch(string(body))
+	if len(matches) == 2 {
+		if dur, err := time.ParseDuration(matches[1] + "s"); err == nil {
+			info.retryInSeconds = dur
+		}
+	}
+	return info
+}
+
+func looksLikeGeminiServerOverload(message string) bool {
+	m := strings.ToLower(message)
+	return strings.Contains(m, "no capacity available")
+}
+
+func (s *GeminiMessagesCompatService) geminiTierCooldown(ctx context.Context, account *Account, tierID string) time.Duration {
+	cooldown := geminiCooldownForTier(tierID)
+	if s.rateLimitService != nil {
+		cooldown = s.rateLimitService.GeminiCooldown(ctx, account)
+	}
+	return cooldown
+}
+
+func (s *GeminiMessagesCompatService) updateGeminiModelRateLimitInCache(ctx context.Context, account *Account, modelKey string, resetAt time.Time) {
+	if s.schedulerSnapshot == nil || account == nil || modelKey == "" {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = make(map[string]any)
+	}
+	limits, _ := account.Extra["model_rate_limits"].(map[string]any)
+	if limits == nil {
+		limits = make(map[string]any)
+		account.Extra["model_rate_limits"] = limits
+	}
+	limits[modelKey] = map[string]any{
+		"rate_limited_at":     time.Now().UTC().Format(time.RFC3339),
+		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
+	}
+	if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
+		log.Printf("[Gemini 429] cache_update_failed account=%d model=%s err=%v", account.ID, modelKey, err)
+	}
+}
+
+func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string) {
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return
@@ -2647,41 +2747,89 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 
 	oauthType := account.GeminiOAuthType()
 	tierID := account.GeminiTierID()
-	projectID := strings.TrimSpace(account.GetCredential("project_id"))
 	isCodeAssist := account.IsGeminiCodeAssist()
+	isSlidingWindow := isCodeAssist || oauthType == "google_one"
 
-	resetAt := ParseGeminiRateLimitResetTime(body)
-	if resetAt == nil {
-		// 根据账号类型使用不同的默认重置时间
-		var ra time.Time
-		if isCodeAssist {
-			// Code Assist: fallback cooldown by tier
-			cooldown := geminiCooldownForTier(tierID)
-			if s.rateLimitService != nil {
-				cooldown = s.rateLimitService.GeminiCooldown(ctx, account)
-			}
-			ra = time.Now().Add(cooldown)
-			log.Printf("[Gemini 429] Account %d (Code Assist, tier=%s, project=%s) rate limited, cooldown=%v", account.ID, tierID, projectID, time.Until(ra).Truncate(time.Second))
-		} else {
-			// API Key / AI Studio OAuth: PST 午夜
-			if ts := nextGeminiDailyResetUnix(); ts != nil {
-				ra = time.Unix(*ts, 0)
-				log.Printf("[Gemini 429] Account %d (API Key/AI Studio, type=%s) rate limited, reset at PST midnight (%v)", account.ID, account.Type, ra)
-			} else {
-				// 兜底：5 分钟
-				ra = time.Now().Add(5 * time.Minute)
-				log.Printf("[Gemini 429] Account %d rate limited, fallback to 5min", account.ID)
-			}
+	// 服务端过载 (MODEL_CAPACITY_EXHAUSTED): 与账号类型无关，统一走模型级短冷却
+	if looksLikeGeminiServerOverload(extractUpstreamErrorMessage(body)) {
+		modelKey := account.GetMappedModel(requestedModel)
+		resetTime := time.Now().Add(geminiOverloadCooldown)
+		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): server overload, cooldown %v",
+			account.ID, modelKey, oauthType, tierID, geminiOverloadCooldown)
+		if strings.TrimSpace(modelKey) != "" {
+			_ = s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetTime)
+			s.updateGeminiModelRateLimitInCache(ctx, account, modelKey, resetTime)
 		}
-		_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
 		return
 	}
 
-	// 使用解析到的重置时间
-	resetTime := time.Unix(*resetAt, 0)
-	_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetTime)
-	log.Printf("[Gemini 429] Account %d rate limited until %v (oauth_type=%s, tier=%s)",
-		account.ID, resetTime, oauthType, tierID)
+	// AI Studio / API Key: 固定每日配额，保持原有账号级限流逻辑
+	if !isSlidingWindow {
+		resetAt := ParseGeminiRateLimitResetTime(body)
+		if resetAt != nil {
+			ra := time.Unix(*resetAt, 0)
+			_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
+			log.Printf("[Gemini 429] Account %d (type=%s) rate limited until %v", account.ID, account.Type, ra)
+		} else if ts := nextGeminiDailyResetUnix(); ts != nil {
+			ra := time.Unix(*ts, 0)
+			_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
+			log.Printf("[Gemini 429] Account %d (type=%s) rate limited, reset at PST midnight (%v)", account.ID, account.Type, ra)
+		} else {
+			ra := time.Now().Add(5 * time.Minute)
+			_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
+			log.Printf("[Gemini 429] Account %d rate limited, fallback to 5min", account.ID)
+		}
+		return
+	}
+
+	// Code Assist / Google One: 滑动窗口配额，区分 RPD 共享配额 vs 服务端过载 vs 模型容量限制
+	info := parseGemini429Info(body)
+	modelKey := account.GetMappedModel(requestedModel)
+
+	if info.isDailyQuota {
+		// "per day" → 共享 RPD 耗尽 → 账号级 + tier cooldown
+		cooldown := s.geminiTierCooldown(ctx, account, tierID)
+		ra := time.Now().Add(cooldown)
+		_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
+		log.Printf("[Gemini 429] Account %d (oauth_type=%s, tier=%s): daily quota exhausted, account-level cooldown %v",
+			account.ID, oauthType, tierID, cooldown)
+		return
+	}
+
+	// 模型级限流 (server overload 已在上方统一处理，此处不会再遇到)
+	var resetTime time.Time
+	switch {
+	case info.hasResetDelay:
+		// quotaResetDelay 已解析 (包括 0s) → 使用实际值，但不低于最小阈值
+		delay := info.quotaResetDelay
+		if delay < geminiMinModelCooldown {
+			delay = geminiMinModelCooldown
+		}
+		resetTime = time.Now().Add(delay)
+		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): quota reset, quotaResetDelay=%v (applied=%v)",
+			account.ID, modelKey, oauthType, tierID, info.quotaResetDelay.Truncate(time.Second), delay)
+	case info.retryInSeconds > 0:
+		delay := info.retryInSeconds
+		if delay < geminiMinModelCooldown {
+			delay = geminiMinModelCooldown
+		}
+		resetTime = time.Now().Add(delay)
+		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): retryIn=%v (applied=%v)",
+			account.ID, modelKey, oauthType, tierID, info.retryInSeconds.Truncate(time.Second), delay)
+	default:
+		cooldown := s.geminiTierCooldown(ctx, account, tierID)
+		resetTime = time.Now().Add(cooldown)
+		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): no parseable reset, model-level cooldown %v",
+			account.ID, modelKey, oauthType, tierID, cooldown)
+	}
+
+	if strings.TrimSpace(modelKey) != "" {
+		_ = s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetTime)
+		s.updateGeminiModelRateLimitInCache(ctx, account, modelKey, resetTime)
+	} else {
+		_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetTime)
+		log.Printf("[Gemini 429] Account %d: empty model key, falling back to account-level", account.ID)
+	}
 }
 
 // ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳
