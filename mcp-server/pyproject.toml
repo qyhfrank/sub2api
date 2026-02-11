@@ -1,0 +1,19 @@
+[project]
+name = "sub2api-mcp-server"
+version = "1.1.0"
+description = "MCP server for Sub2API LLM gateway management"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+sub2api-mcp = "sub2api_mcp:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sub2api_mcp"]

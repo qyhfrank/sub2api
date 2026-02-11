@@ -1,4 +1,9 @@
 docs/claude-relay-service/
+.codex/
+.opencode/
+.mcp.json
+.asb.toml
+
 
 # ===================
 # Go 后端
@@ -43,6 +48,16 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# ===================
+# Python / MCP Server
+# ===================
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+mcp-server/.venv/
 
 # ===================
 # 环境配置
