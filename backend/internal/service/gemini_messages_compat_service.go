@@ -2678,9 +2678,6 @@ const (
 	// geminiMinModelCooldown prevents setting model-level rate limits shorter than
 	// the DB write + cache sync latency. A 0s or 1s limit expires before it takes effect.
 	geminiMinModelCooldown = 5 * time.Second
-	// geminiOverloadCooldown is applied when the server reports "No capacity available".
-	// This is a transient server-side issue (not user quota), typically resolves in seconds.
-	geminiOverloadCooldown = 30 * time.Second
 )
 
 // parseGemini429Info extracts rate limit information from a Gemini 429 response.
@@ -2792,16 +2789,11 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	isSlidingWindow := isCodeAssist || oauthType == "google_one"
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 
-	// 服务端过载 (MODEL_CAPACITY_EXHAUSTED): 与账号类型无关，统一走模型级短冷却
+	// 服务端过载 (MODEL_CAPACITY_EXHAUSTED): 交给外层内置指数退避重试，不写入模型冷却
 	if looksLikeGeminiServerOverload(upstreamMsg) {
 		modelKey := account.GetMappedModel(requestedModel)
-		resetTime := time.Now().Add(geminiOverloadCooldown)
-		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): server overload, cooldown %v",
-			account.ID, modelKey, oauthType, tierID, geminiOverloadCooldown)
-		if strings.TrimSpace(modelKey) != "" {
-			_ = s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetTime)
-			s.updateGeminiModelRateLimitInCache(ctx, account, modelKey, resetTime)
-		}
+		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): server overload, enter in-account exponential retry (no model cooldown)",
+			account.ID, modelKey, oauthType, tierID)
 		return
 	}
 
@@ -2844,7 +2836,7 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 		return
 	}
 
-	// 模型级限流 (server overload 已在上方统一处理，此处不会再遇到)
+	// 模型级限流 (server overload 已在上方提前返回，此处不会再遇到)
 	var resetTime time.Time
 	switch {
 	case info.hasResetDelay:
