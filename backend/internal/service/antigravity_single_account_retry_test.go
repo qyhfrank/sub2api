@@ -259,7 +259,7 @@ func TestHandleSmartRetry_429_LongDelay_SingleAccountRetry_StillSwitches(t *test
 // ---------------------------------------------------------------------------
 
 // TestHandleSmartRetry_503_ShortDelay_SingleAccountRetry_NoRateLimit
-// 503 + retryDelay < 7s + SingleAccountRetry → 智能重试耗尽后直接返回 503，不设限流
+// 503 + retryDelay < 7s + SingleAccountRetry → 智能重试耗尽后切换账号，不设限流
 func TestHandleSmartRetry_503_ShortDelay_SingleAccountRetry_NoRateLimit(t *testing.T) {
 	// 智能重试也返回 503
 	failRespBody := `{
@@ -328,10 +328,9 @@ func TestHandleSmartRetry_503_ShortDelay_SingleAccountRetry_NoRateLimit(t *testi
 
 	require.NotNil(t, result)
 	require.Equal(t, smartRetryActionBreakWithResp, result.action)
-	// 关键断言：单账号 503 模式下，智能重试耗尽后直接返回 503 响应，不切换
-	require.NotNil(t, result.resp, "should return 503 response directly for single account mode")
-	require.Equal(t, http.StatusServiceUnavailable, result.resp.StatusCode)
-	require.Nil(t, result.switchError, "should NOT switch account in single account mode")
+	// 关键断言：单账号 503 模式下，智能重试耗尽后走切账号路径
+	require.Nil(t, result.resp, "should not return direct response after model-capacity retries exhausted")
+	require.NotNil(t, result.switchError, "should switch account after model-capacity retries exhausted")
 
 	// 关键断言：不设模型限流
 	require.Len(t, repo.modelRateLimitCalls, 0,
@@ -340,7 +339,7 @@ func TestHandleSmartRetry_503_ShortDelay_SingleAccountRetry_NoRateLimit(t *testi
 
 // TestHandleSmartRetry_503_ShortDelay_NoSingleAccountRetry_SetsRateLimit
 // 对照组：503 + retryDelay < 7s + 无 SingleAccountRetry → 智能重试耗尽后照常设限流
-// 使用 RATE_LIMIT_EXCEEDED 而非 MODEL_CAPACITY_EXHAUSTED，因为后者走独立的 60 次重试路径
+// 使用 RATE_LIMIT_EXCEEDED 而非 MODEL_CAPACITY_EXHAUSTED，因为后者走独立的 30 次重试路径
 func TestHandleSmartRetry_503_ShortDelay_NoSingleAccountRetry_SetsRateLimit(t *testing.T) {
 	failRespBody := `{
 		"error": {
