@@ -2718,8 +2718,7 @@ func parseGemini429Info(body []byte) gemini429Info {
 }
 
 func shouldFastFailoverGemini429(body []byte) (bool, string) {
-	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
-	if looksLikeGeminiServerOverload(upstreamMsg) {
+	if looksLikeGeminiServerOverloadBody(body) {
 		return false, "server_overload"
 	}
 
@@ -2734,6 +2733,18 @@ func shouldFastFailoverGemini429(body []byte) (bool, string) {
 	default:
 		return false, "unknown"
 	}
+}
+
+func looksLikeGeminiServerOverloadBody(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if looksLikeGeminiServerOverload(strings.TrimSpace(extractUpstreamErrorMessage(body))) {
+		return true
+	}
+	// Fallback: some upstream wrappers don't expose message at error.message.
+	// Scan raw body to avoid misclassifying overload as long model cooldown.
+	return looksLikeGeminiServerOverload(string(body))
 }
 
 func looksLikeGeminiServerOverload(message string) bool {
@@ -2790,7 +2801,7 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 
 	// 服务端过载 (MODEL_CAPACITY_EXHAUSTED): 交给外层内置指数退避重试，不写入模型冷却
-	if looksLikeGeminiServerOverload(upstreamMsg) {
+	if looksLikeGeminiServerOverloadBody(body) {
 		modelKey := account.GetMappedModel(requestedModel)
 		log.Printf("[Gemini 429] Account %d model=%s (oauth_type=%s, tier=%s): server overload, enter in-account exponential retry (no model cooldown)",
 			account.ID, modelKey, oauthType, tierID)
