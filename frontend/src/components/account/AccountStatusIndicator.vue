@@ -78,21 +78,23 @@
 
     <!-- Model Rate Limit Indicators (Antigravity OAuth Smart Retry) -->
     <template v-if="activeModelRateLimits.length > 0">
-      <div v-for="item in activeModelRateLimits" :key="item.model" class="group relative">
-        <span
-          class="inline-flex items-center gap-1 rounded bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-        >
-          <Icon name="exclamationTriangle" size="xs" :stroke-width="2" />
-          {{ formatScopeName(item.model) }}
-        </span>
-        <!-- Tooltip -->
-        <div
-          class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
-        >
-          {{ t('admin.accounts.status.modelRateLimitedUntil', { model: formatScopeName(item.model), time: formatTime(item.reset_at) }) }}
+      <div class="flex flex-col items-start gap-1">
+        <div v-for="item in activeModelRateLimits" :key="item.model" class="group relative">
+          <span
+            class="inline-flex items-center gap-1 rounded bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+          >
+            <Icon name="exclamationTriangle" size="xs" :stroke-width="2" />
+            {{ formatScopeName(item.model) }}
+          </span>
+          <!-- Tooltip -->
           <div
-            class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-900 dark:border-t-gray-700"
-          ></div>
+            class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+          >
+            {{ t('admin.accounts.status.modelRateLimitedUntil', { model: formatScopeName(item.model), time: formatTime(item.reset_at) }) }}
+            <div
+              class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-900 dark:border-t-gray-700"
+            ></div>
+          </div>
         </div>
       </div>
     </template>
