@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -459,7 +460,29 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	}
 
 	// Process SSE stream
-	return s.processGeminiStream(c, resp.Body)
+	if err := s.processGeminiStream(c, resp.Body); err != nil {
+		return err
+	}
+	s.clearGeminiModelRateLimitAfterSuccessfulTest(ctx, account, testModelID)
+	return nil
+}
+
+func (s *AccountTestService) clearGeminiModelRateLimitAfterSuccessfulTest(ctx context.Context, account *Account, testedModel string) {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return
+	}
+	// Use the exact model ID used in the successful test request.
+	// Do not remap here to avoid clearing a different model key under wildcard/chain mappings.
+	modelKey := strings.TrimSpace(testedModel)
+	if modelKey == "" {
+		return
+	}
+	now := time.Now().UTC()
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, now); err != nil {
+		log.Printf("[Gemini Test] clear model rate limit failed: account=%d model=%s err=%v", account.ID, modelKey, err)
+		return
+	}
+	log.Printf("[Gemini Test] clear model rate limit: account=%d model=%s", account.ID, modelKey)
 }
 
 // testAntigravityAccountConnection tests an Antigravity account's connection

@@ -325,16 +325,18 @@ const handleClose = () => {
 const handleGenerateUrl = async () => {
   if (!props.account) return
 
-  if (isOpenAI.value) {
-    await openaiOAuth.generateAuthUrl(props.account.proxy_id)
-  } else if (isGemini.value) {
-    const creds = (props.account.credentials || {}) as Record<string, unknown>
-    const tierId = typeof creds.tier_id === 'string' ? creds.tier_id : undefined
-    const projectId = geminiOAuthType.value === 'code_assist' ? oauthFlowRef.value?.projectId : undefined
-    await geminiOAuth.generateAuthUrl(props.account.proxy_id, projectId, geminiOAuthType.value, tierId)
-  } else if (isAntigravity.value) {
-    await antigravityOAuth.generateAuthUrl(props.account.proxy_id)
-  } else {
+	if (isOpenAI.value) {
+		await openaiOAuth.generateAuthUrl(props.account.proxy_id)
+	} else if (isGemini.value) {
+		const creds = (props.account.credentials || {}) as Record<string, unknown>
+		const tierId = typeof creds.tier_id === 'string' ? creds.tier_id : undefined
+		const uiProjectId = geminiOAuthType.value === 'code_assist' ? oauthFlowRef.value?.projectId?.trim() : undefined
+		const existingProjectId = typeof creds.project_id === 'string' ? creds.project_id.trim() : undefined
+		const projectId = uiProjectId || existingProjectId || undefined
+		await geminiOAuth.generateAuthUrl(props.account.proxy_id, projectId, geminiOAuthType.value, tierId)
+	} else if (isAntigravity.value) {
+		await antigravityOAuth.generateAuthUrl(props.account.proxy_id)
+	} else {
     await claudeOAuth.generateAuthUrl(addMethod.value, props.account.proxy_id)
   }
 }
