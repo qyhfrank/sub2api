@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -34,6 +35,15 @@ const (
 	geminiMaxRetries     = 5
 	geminiRetryBaseDelay = 1 * time.Second
 	geminiRetryMaxDelay  = 16 * time.Second
+
+	// MODEL_CAPACITY_EXHAUSTED 专用重试参数
+	// No capacity 属于上游模型容量抖动，切账号通常无效
+	geminiModelCapacityRetryMaxAttempts = 60
+	geminiModelCapacityRetryWait        = 1 * time.Second
+
+	// MODEL_CAPACITY_EXHAUSTED 全局去重
+	// 避免多个并发请求同时执行 60 次重试
+	geminiModelCapacityCooldown = 10 * time.Second
 )
 
 // Gemini tool calling now requires `thoughtSignature` in parts that include `functionCall`.
@@ -666,6 +676,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	var resp *http.Response
 	signatureRetryStage := 0
 	rateLimitMarked := false
+	modelCapacityRetryExhausted := false
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
@@ -797,6 +808,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 					rateLimitMarked = true
 				}
+				if looksLikeGeminiServerOverloadBody(respBody) {
+					retriedResp, exhausted, retryErr := s.retryGeminiModelCapacityExhausted(ctx, account, proxyURL, originalModel, buildReq, resp, respBody)
+					if retryErr != nil {
+						return nil, retryErr
+					}
+					resp = retriedResp
+					modelCapacityRetryExhausted = exhausted
+					break
+				}
 				if fastFailover, reason := shouldFastFailoverGemini429(respBody); fastFailover {
 					log.Printf("[Gemini 429] Account %d: fast failover reason=%s, skip in-account retry", account.ID, reason)
 					resp = &http.Response{
@@ -852,6 +872,13 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if modelCapacityRetryExhausted && resp.StatusCode == http.StatusTooManyRequests && looksLikeGeminiServerOverloadBody(respBody) {
+			upstreamReqID := resp.Header.Get(requestIDHeader)
+			if upstreamReqID == "" {
+				upstreamReqID = resp.Header.Get("x-goog-request-id")
+			}
+			return nil, s.writeGeminiMappedError(c, account, resp.StatusCode, upstreamReqID, respBody)
+		}
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
 			switch s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody) {
@@ -928,7 +955,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: true}
 			}
 		}
-		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+		if !modelCapacityRetryExhausted && s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
 			upstreamReqID := resp.Header.Get(requestIDHeader)
 			if upstreamReqID == "" {
 				upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -1181,6 +1208,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 	var resp *http.Response
 	rateLimitMarked := false
+	modelCapacityRetryExhausted := false
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
@@ -1257,6 +1285,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				if !rateLimitMarked {
 					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 					rateLimitMarked = true
+				}
+				if looksLikeGeminiServerOverloadBody(respBody) {
+					retriedResp, exhausted, retryErr := s.retryGeminiModelCapacityExhausted(ctx, account, proxyURL, originalModel, buildReq, resp, respBody)
+					if retryErr != nil {
+						return nil, retryErr
+					}
+					resp = retriedResp
+					modelCapacityRetryExhausted = exhausted
+					break
 				}
 				if fastFailover, reason := shouldFastFailoverGemini429(respBody); fastFailover {
 					log.Printf("[Gemini 429] Account %d: fast failover reason=%s, skip in-account retry", account.ID, reason)
@@ -1335,6 +1372,20 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if modelCapacityRetryExhausted && resp.StatusCode == http.StatusTooManyRequests && looksLikeGeminiServerOverloadBody(respBody) {
+			respBody = unwrapIfNeeded(isOAuth, respBody)
+			contentType := resp.Header.Get("Content-Type")
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			c.Data(resp.StatusCode, contentType, respBody)
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+			if upstreamMsg == "" {
+				return nil, fmt.Errorf("gemini upstream error: %d", resp.StatusCode)
+			}
+			return nil, fmt.Errorf("gemini upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+		}
 		// Best-effort fallback for OAuth tokens missing AI Studio scopes when calling countTokens.
 		// This avoids Gemini SDKs failing hard during preflight token counting.
 		// Checked before error policy so it always works regardless of custom error codes.
@@ -1423,7 +1474,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: evBody, RetryableOnSameAccount: true}
 			}
 		}
-		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
+		if !modelCapacityRetryExhausted && s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
 			evBody := unwrapIfNeeded(isOAuth, respBody)
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1599,9 +1650,157 @@ func sleepGeminiBackoff(attempt int) {
 	time.Sleep(sleepFor)
 }
 
+func sleepGeminiFixedRetryWithContext(ctx context.Context, wait time.Duration) bool {
+	if wait <= 0 {
+		return true
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func newGeminiRetryResponse(statusCode int, header http.Header, body []byte) *http.Response {
+	clonedHeader := http.Header{}
+	if header != nil {
+		clonedHeader = header.Clone()
+	}
+	clonedBody := append([]byte(nil), body...)
+	return &http.Response{
+		StatusCode: statusCode,
+		Header:     clonedHeader,
+		Body:       io.NopCloser(bytes.NewReader(clonedBody)),
+	}
+}
+
+func geminiModelCapacityRetryKey(body []byte, requestedModel string) string {
+	if model := strings.TrimSpace(requestedModel); model != "" {
+		return model
+	}
+	msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+	if msg == "" {
+		msg = truncateString(strings.TrimSpace(string(body)), 256)
+	}
+	return strings.ToLower(msg)
+}
+
+func geminiModelCapacityCooldownActive(modelKey string) (time.Time, bool) {
+	if modelKey == "" {
+		return time.Time{}, false
+	}
+	geminiModelCapacityExhaustedMu.RLock()
+	until, ok := geminiModelCapacityExhaustedUntil[modelKey]
+	geminiModelCapacityExhaustedMu.RUnlock()
+	if !ok || time.Now().After(until) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+func setGeminiModelCapacityCooldown(modelKey string, until time.Time) {
+	if modelKey == "" {
+		return
+	}
+	geminiModelCapacityExhaustedMu.Lock()
+	geminiModelCapacityExhaustedUntil[modelKey] = until
+	geminiModelCapacityExhaustedMu.Unlock()
+}
+
+func clearGeminiModelCapacityCooldown(modelKey string) {
+	if modelKey == "" {
+		return
+	}
+	geminiModelCapacityExhaustedMu.Lock()
+	delete(geminiModelCapacityExhaustedUntil, modelKey)
+	geminiModelCapacityExhaustedMu.Unlock()
+}
+
+func (s *GeminiMessagesCompatService) retryGeminiModelCapacityExhausted(
+	ctx context.Context,
+	account *Account,
+	proxyURL string,
+	requestedModel string,
+	buildReq func(context.Context) (*http.Request, string, error),
+	initialResp *http.Response,
+	initialBody []byte,
+) (*http.Response, bool, error) {
+	lastStatus := http.StatusTooManyRequests
+	lastHeader := http.Header{}
+	if initialResp != nil {
+		lastStatus = initialResp.StatusCode
+		if initialResp.Header != nil {
+			lastHeader = initialResp.Header.Clone()
+		}
+	}
+	lastBody := append([]byte(nil), initialBody...)
+
+	modelKey := geminiModelCapacityRetryKey(initialBody, requestedModel)
+	if cooldownUntil, ok := geminiModelCapacityCooldownActive(modelKey); ok {
+		log.Printf("[Gemini 429] Account %d model=%s: model-capacity retry cooldown active until=%s, skip retry",
+			account.ID, modelKey, cooldownUntil.Format("15:04:05"))
+		return newGeminiRetryResponse(lastStatus, lastHeader, lastBody), true, nil
+	}
+
+	for attempt := 1; attempt <= geminiModelCapacityRetryMaxAttempts; attempt++ {
+		log.Printf("[Gemini 429] Account %d model=%s: model-capacity retry %d/%d",
+			account.ID, modelKey, attempt, geminiModelCapacityRetryMaxAttempts)
+
+		if !sleepGeminiFixedRetryWithContext(ctx, geminiModelCapacityRetryWait) {
+			return nil, false, ctx.Err()
+		}
+
+		retryReq, _, err := buildReq(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, false, err
+			}
+			log.Printf("[Gemini 429] Account %d model=%s: retry request build failed: %v", account.ID, modelKey, err)
+			continue
+		}
+
+		retryResp, retryErr := s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency)
+		if retryErr != nil || retryResp == nil {
+			if ctx.Err() != nil {
+				return nil, false, ctx.Err()
+			}
+			log.Printf("[Gemini 429] Account %d model=%s: retry upstream request failed: %v", account.ID, modelKey, retryErr)
+			continue
+		}
+
+		retryBody, _ := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
+		_ = retryResp.Body.Close()
+
+		if retryResp.StatusCode < 400 {
+			clearGeminiModelCapacityCooldown(modelKey)
+			return newGeminiRetryResponse(retryResp.StatusCode, retryResp.Header, retryBody), false, nil
+		}
+
+		if retryResp.StatusCode == http.StatusTooManyRequests && looksLikeGeminiServerOverloadBody(retryBody) {
+			lastStatus = retryResp.StatusCode
+			lastHeader = retryResp.Header.Clone()
+			lastBody = retryBody
+			continue
+		}
+
+		return newGeminiRetryResponse(retryResp.StatusCode, retryResp.Header, retryBody), false, nil
+	}
+
+	setGeminiModelCapacityCooldown(modelKey, time.Now().Add(geminiModelCapacityCooldown))
+	log.Printf("[Gemini 429] Account %d model=%s: model-capacity retry exhausted after %d attempts, return upstream error without failover",
+		account.ID, modelKey, geminiModelCapacityRetryMaxAttempts)
+	return newGeminiRetryResponse(lastStatus, lastHeader, lastBody), true, nil
+}
+
 var (
 	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
+
+	geminiModelCapacityExhaustedMu    sync.RWMutex
+	geminiModelCapacityExhaustedUntil = make(map[string]time.Time)
 )
 
 func sanitizeUpstreamErrorMessage(msg string) string {
