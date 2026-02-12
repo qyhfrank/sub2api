@@ -311,6 +311,15 @@
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     {{ t('admin.accounts.oauth.gemini.projectIdHint') }}
                   </p>
+                  <p class="mt-1 text-xs text-blue-700 dark:text-blue-300">
+                    {{ t('admin.accounts.oauth.gemini.projectIdBeforeGenerate') }}
+                  </p>
+                  <p
+                    v-if="projectIdStatusMessage"
+                    class="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                  >
+                    {{ projectIdStatusMessage }}
+                  </p>
                 </div>
                 <button
                   v-if="!authUrl"
@@ -548,6 +557,7 @@ const emit = defineEmits<{
   'exchange-code': [code: string]
   'cookie-auth': [sessionKey: string]
   'validate-refresh-token': [refreshToken: string]
+  'invalidate-auth-session': []
   'update:inputMethod': [method: AuthInputMethod]
 }>()
 
@@ -589,6 +599,9 @@ const refreshTokenInput = ref('')
 const showHelpDialog = ref(false)
 const oauthState = ref('')
 const projectId = ref('')
+const projectIdStatusMessage = ref('')
+
+const isGeminiProjectIdFlow = computed(() => props.platform === 'gemini' && props.showProjectId)
 
 // Computed: show method selection when either cookie or refresh token option is enabled
 const showMethodSelection = computed(() => props.showCookieOption || props.showRefreshTokenOption)
@@ -651,8 +664,34 @@ watch(authCodeInput, (newVal) => {
   }
 })
 
+watch(
+  () => props.authUrl,
+  (newVal, oldVal) => {
+    if (!isGeminiProjectIdFlow.value) return
+    if (newVal && !oldVal) {
+      projectIdStatusMessage.value = ''
+      return
+    }
+  }
+)
+
+watch(projectId, (newVal, oldVal) => {
+  if (!isGeminiProjectIdFlow.value) return
+  if (!props.authUrl) return
+
+  const nextProjectID = newVal.trim()
+  const prevProjectID = oldVal.trim()
+  if (nextProjectID === prevProjectID) return
+
+  authCodeInput.value = ''
+  oauthState.value = ''
+  projectIdStatusMessage.value = t('admin.accounts.oauth.gemini.projectIdChangedNeedRegenerate')
+  emit('invalidate-auth-session')
+})
+
 // Methods
 const handleGenerateUrl = () => {
+  projectIdStatusMessage.value = ''
   emit('generate-url')
 }
 
@@ -664,7 +703,7 @@ const handleCopyUrl = () => {
 
 const handleRegenerate = () => {
   authCodeInput.value = ''
-  emit('generate-url')
+  handleGenerateUrl()
 }
 
 const handleCookieAuth = () => {
@@ -691,6 +730,7 @@ defineExpose({
     authCodeInput.value = ''
     oauthState.value = ''
     projectId.value = ''
+    projectIdStatusMessage.value = ''
     sessionKeyInput.value = ''
     refreshTokenInput.value = ''
     inputMethod.value = 'manual'

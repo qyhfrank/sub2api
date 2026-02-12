@@ -1859,6 +1859,8 @@ export default {
           projectIdPlaceholder: '例如：my-gcp-project 或 cloud-ai-companion-xxxxx',
           projectIdHint:
             '留空则在兑换授权码后自动探测；若自动探测失败，可填写后重新生成授权链接再授权。',
+          projectIdBeforeGenerate: '可留空自动探测；若需手动填写，请在生成授权链接前填写。',
+          projectIdChangedNeedRegenerate: 'Project ID 已变更，请重新生成授权链接。',
           howToGetProjectId: '如何获取',
           step2OpenUrl: '在浏览器中打开链接并完成授权',
           openUrlDesc: '请在新标签页中打开授权链接，登录您的 Google 账户并授权。',

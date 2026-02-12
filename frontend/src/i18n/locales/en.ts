@@ -1719,6 +1719,8 @@ export default {
 	          projectIdPlaceholder: 'e.g. my-gcp-project or cloud-ai-companion-xxxxx',
 	          projectIdHint:
 	            'Leave empty to auto-detect after code exchange. If auto-detection fails, fill it in and re-generate the auth URL to try again.',
+	          projectIdBeforeGenerate: 'You can leave it empty for auto-detection. If you want to enter Project ID manually, fill it before generating the auth URL.',
+	          projectIdChangedNeedRegenerate: 'Project ID changed. Please regenerate the auth URL.',
 	          howToGetProjectId: 'How to get',
 	          step2OpenUrl: 'Open the URL in your browser and complete authorization',
 	          openUrlDesc:

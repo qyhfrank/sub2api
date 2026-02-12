@@ -1651,6 +1651,7 @@
         :platform="form.platform"
         :show-project-id="geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
+        @invalidate-auth-session="handleInvalidateAuthSession"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
       />
@@ -2799,6 +2800,18 @@ const handleGenerateUrl = async () => {
     await antigravityOAuth.generateAuthUrl(form.proxy_id)
   } else {
     await oauth.generateAuthUrl(addMethod.value, form.proxy_id)
+  }
+}
+
+const handleInvalidateAuthSession = () => {
+  if (form.platform === 'openai') {
+    openaiOAuth.resetState()
+  } else if (form.platform === 'gemini') {
+    geminiOAuth.resetState()
+  } else if (form.platform === 'antigravity') {
+    antigravityOAuth.resetState()
+  } else {
+    oauth.resetState()
   }
 }
 

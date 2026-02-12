@@ -131,6 +131,7 @@
         :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
+        @invalidate-auth-session="handleInvalidateAuthSession"
         @cookie-auth="handleCookieAuth"
       />
 
@@ -322,6 +323,10 @@ const handleClose = () => {
   emit('close')
 }
 
+const handleInvalidateAuthSession = () => {
+  geminiOAuth.resetState()
+}
+
 const handleGenerateUrl = async () => {
   if (!props.account) return
 
@@ -330,9 +335,7 @@ const handleGenerateUrl = async () => {
 	} else if (isGemini.value) {
 		const creds = (props.account.credentials || {}) as Record<string, unknown>
 		const tierId = typeof creds.tier_id === 'string' ? creds.tier_id : undefined
-		const uiProjectId = geminiOAuthType.value === 'code_assist' ? oauthFlowRef.value?.projectId?.trim() : undefined
-		const existingProjectId = typeof creds.project_id === 'string' ? creds.project_id.trim() : undefined
-		const projectId = uiProjectId || existingProjectId || undefined
+		const projectId = geminiOAuthType.value === 'code_assist' ? oauthFlowRef.value?.projectId : undefined
 		await geminiOAuth.generateAuthUrl(props.account.proxy_id, projectId, geminiOAuthType.value, tierId)
 	} else if (isAntigravity.value) {
 		await antigravityOAuth.generateAuthUrl(props.account.proxy_id)
