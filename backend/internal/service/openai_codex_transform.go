@@ -557,6 +557,7 @@ func fetchWithETag(url, etag string) (string, string, int, error) {
 	if etag != "" {
 		req.Header.Set("If-None-Match", etag)
 	}
+	// #nosec G704 -- URL is limited to trusted OpenAI release endpoints.
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", 0, err
