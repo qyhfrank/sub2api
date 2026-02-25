@@ -653,6 +653,7 @@ const emit = defineEmits<{
   'cookie-auth': [sessionKey: string]
   'validate-refresh-token': [refreshToken: string]
   'validate-session-token': [sessionToken: string]
+  'invalidate-auth-session': []
   'update:inputMethod': [method: AuthInputMethod]
 }>()
 
