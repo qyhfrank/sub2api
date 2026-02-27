@@ -27,7 +27,10 @@ permissions:
 
 jobs:
   # Update VERSION file with tag version
+  # Guard: only run for merge tags (v*.merge.*) or workflow_dispatch
+  # Upstream tags (e.g. v0.1.87) must NOT trigger a release
   update-version:
+    if: github.event_name == 'workflow_dispatch' || contains(github.ref, '.merge.')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -52,6 +55,7 @@ jobs:
           retention-days: 1
 
   build-frontend:
+    if: github.event_name == 'workflow_dispatch' || contains(github.ref, '.merge.')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
