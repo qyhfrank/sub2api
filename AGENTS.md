@@ -44,12 +44,10 @@
    本仓库有大量自定义改动（Gemini 429 处理、MCP server、UI 改进等），
    merge 时必须确保这些不被上游覆盖。
    如果有不适合自动 merge 的内容，停下来通知用户。
-5. 推送 commits（⚠️ 不要推送上游 tag 到 origin！）：
+5. 推送 commits 和上游 tag：
    git push origin main
-   ⚠️ 不要执行 git push origin <上游tag>！
-   上游 tag push 到 fork 会触发 Release workflow 生成错误的 Docker 镜像，
-   覆盖 latest 标签，导致 latest 指向不含 fork 自定义改动的版本。
-   上游 tag 保留在本地即可（git fetch upstream --tags 已拉取）。
+   git push origin <tag>
+   （上游 tag 仅作版本基准参考，release.yml 有 guard 不会触发 Release）
 6. 打 merge tag：
    - 查找已有序号：git tag -l '<tag>.merge.*' --sort=-v:refname | head -1
    - 无已有 → <tag>.merge.0，已有 N → <tag>.merge.{N+1}
