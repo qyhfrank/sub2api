@@ -128,7 +128,7 @@ tests
 .claude
 scripts
 .code-review-state
-openspec/
+#openspec/
 code-reviews/
 backend/cmd/server/server
 deploy/docker-compose.override.yml
@@ -139,4 +139,5 @@ docs/*
 .codex/
 frontend/coverage/
 aicodex
+output/
 
