@@ -87,6 +87,7 @@ export interface CustomMenuItem {
 export interface PublicSettings {
   registration_enabled: boolean
   email_verify_enabled: boolean
+  registration_email_suffix_whitelist: string[]
   promo_code_enabled: boolean
   password_reset_enabled: boolean
   invitation_code_enabled: boolean
@@ -421,6 +422,15 @@ export interface ApiKey {
   created_at: string
   updated_at: string
   group?: Group
+  rate_limit_5h: number
+  rate_limit_1d: number
+  rate_limit_7d: number
+  usage_5h: number
+  usage_1d: number
+  usage_7d: number
+  window_5h_start: string | null
+  window_1d_start: string | null
+  window_7d_start: string | null
 }
 
 export interface CreateApiKeyRequest {
@@ -431,6 +441,9 @@ export interface CreateApiKeyRequest {
   ip_blacklist?: string[]
   quota?: number // Quota limit in USD (0 = unlimited)
   expires_in_days?: number // Days until expiry (null = never expires)
+  rate_limit_5h?: number
+  rate_limit_1d?: number
+  rate_limit_7d?: number
 }
 
 export interface UpdateApiKeyRequest {
@@ -442,6 +455,10 @@ export interface UpdateApiKeyRequest {
   quota?: number // Quota limit in USD (null = no change, 0 = unlimited)
   expires_at?: string | null // Expiration time (null = no change)
   reset_quota?: boolean // Reset quota_used to 0
+  rate_limit_5h?: number
+  rate_limit_1d?: number
+  rate_limit_7d?: number
+  reset_rate_limit_usage?: boolean
 }
 
 export interface CreateGroupRequest {
