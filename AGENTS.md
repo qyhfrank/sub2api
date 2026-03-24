@@ -73,6 +73,11 @@
 6. 检查 CI：gh run list --workflow=release.yml --limit 1
 ```
 
+默认跟进策略：当本仓库的发布流程已推送 `main` 和新的 `v*.merge.*` tag 后，默认继续同时执行以下两件事，无需再次询问用户：
+
+- 持续检查 `backend-ci.yml` 和 `release.yml`，直到有明确结果
+- 若任一 workflow 失败，直接开始排查失败原因并汇报关键结论
+
 也可用 workflow_dispatch 重新构建已有 tag：
 
 ```
@@ -93,3 +98,18 @@ CRS 的 `GET /admin/sync/export-accounts` **不导出 Gemini 账户**。Sub2API 
 
 - **curl 不可用**：部署前置 openresty/WAF 会拒绝 curl 请求头，用 Python `urllib.request` 可正常通过。
 - **Auth 方式**：admin token 以 `admin-` 开头时使用 `x-api-key` header，否则使用 `Authorization: Bearer` header（参见 `client.py:13-15`）。
+- **sub2api MCP 报 URL 缺协议**：若 `sub2api` MCP 工具报 `Request URL is missing an 'http://' or 'https://' protocol`，先检查当前仓库绝对路径是否已加入 `~/.codex/config.toml` 的 trusted projects。若项目 `.codex/config.toml` 在会话启动时未生效，修正 trust 后需要重开 Codex 会话；若 shell 环境中的 `SUB2API_BASE_URL` / `SUB2API_TOKEN` 已存在但内置 MCP 仍失败，可用独立 `FastMCP Client + sub2api-mcp` 直连验证，把 server 可用性问题与会话配置未加载问题分开排查。
+- **OpenAI OAuth + MCP 备忘**：涉及 `sub2api-mcp` 排障、`new-api` Codex 凭证导入、`model_mapping` 与“填入相关模型”行为时，优先查看 `docs/sub2api-openai-oauth-mcp-notes.md`。
+
+## Harness
+
+This project uses the harness autonomous iteration engine.
+
+- Current task pointer: `.harness/current-task`
+- Task configs: `.harness/tasks/<task_id>/config.yaml`
+- Task state: `.harness/tasks/<task_id>/state.jsonl`
+- Task context: `.harness/tasks/<task_id>/context.md`
+- Task artifacts: `.harness/tasks/<task_id>/artifacts/`
+- Design and implementation plans live under `.harness/tasks/<task_id>/`. Do not create new planning docs under `docs/superpowers/`.
+
+Run `/harness plan` to configure, `/harness run` to execute.

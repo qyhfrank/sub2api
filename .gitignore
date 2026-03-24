@@ -1,5 +1,6 @@
 .codex/
 .opencode/
+.harness/
 .mcp.json
 .asb.toml
 __pycache__/
@@ -126,6 +127,11 @@ backend/.installed
 # ===================
 tests
 .claude
+.asb/
+.coco/
+.cursor/
+.trae/
+.agents/
 scripts
 .code-review-state
 #openspec/
@@ -140,4 +146,3 @@ docs/*
 frontend/coverage/
 aicodex
 output/
-
