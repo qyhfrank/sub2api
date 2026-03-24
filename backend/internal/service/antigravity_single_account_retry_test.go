@@ -330,9 +330,10 @@ func TestHandleSmartRetry_503_ShortDelay_SingleAccountRetry_NoRateLimit(t *testi
 
 	require.NotNil(t, result)
 	require.Equal(t, smartRetryActionBreakWithResp, result.action)
-	// 关键断言：单账号 503 模式下，智能重试耗尽后走切账号路径
-	require.Nil(t, result.resp, "should not return direct response after model-capacity retries exhausted")
-	require.NotNil(t, result.switchError, "should switch account after model-capacity retries exhausted")
+	// 关键断言：单账号 503 模式下，智能重试耗尽后直接返回 503 响应，不切换账号
+	require.NotNil(t, result.resp, "should return 503 response directly in single account mode")
+	require.Equal(t, http.StatusServiceUnavailable, result.resp.StatusCode)
+	require.Nil(t, result.switchError, "should NOT switch account in single account mode")
 
 	// 关键断言：不设模型限流
 	require.Len(t, repo.modelRateLimitCalls, 0,
