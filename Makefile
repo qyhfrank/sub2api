@@ -28,5 +28,8 @@ test-frontend:
 test-datamanagementd:
 	@cd datamanagement && go test ./...
 
+preflight-backend-ci:
+	@bash tools/preflight_backend_ci.sh
+
 secret-scan:
 	@python3 tools/secret_scan.py

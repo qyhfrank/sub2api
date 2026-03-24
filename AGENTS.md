@@ -64,13 +64,18 @@
 本地有新改动但不需要同步上游时：
 
 ```
-1. 确认改动已提交到 main
-2. 找到当前上游版本的最新 merge tag，递增序号
+1. 本地预检必须先通过：
+   make preflight-backend-ci
+   该脚本对齐远端 `backend-ci.yml` 的关键 gate：Go 版本、`golangci-lint`、unit tests、integration tests、`go build ./...`
+   若本机没有可用 Docker daemon，脚本会在 integration tests 前直接失败并给出提示；这种情况下不要继续 push/tag
+   ⚠️ 任何一步失败都不要 push/tag，先在本地修复
+2. 确认改动已提交到 main
+3. 找到当前上游版本的最新 merge tag，递增序号
    例：当前最新是 v0.1.82.merge.0 → 新 tag 为 v0.1.82.merge.1
-3. git push origin main
-4. git tag <新 merge tag>
-5. git push origin <新 merge tag>
-6. 检查 CI：gh run list --workflow=release.yml --limit 1
+4. git push origin main
+5. git tag <新 merge tag>
+6. git push origin <新 merge tag>
+7. 检查 CI：gh run list --workflow=release.yml --limit 1
 ```
 
 默认跟进策略：当本仓库的发布流程已推送 `main` 和新的 `v*.merge.*` tag 后，默认继续同时执行以下两件事，无需再次询问用户：
