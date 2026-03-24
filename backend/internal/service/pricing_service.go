@@ -584,6 +584,26 @@ func normalizeModelNameForPricing(model string) string {
 	}
 
 	model = strings.TrimLeft(model, "/")
+	model = CanonicalBedrockModelID(model)
+
+	switch model {
+	case "deepseek-v3.2", "deepseek.v3.2":
+		return "deepseek-v3-2-251201"
+	case "deepseek-r1", "deepseek.r1-v1:0":
+		return "deepseek-reasoner"
+	case "moonshotai.kimi-k2.5", "moonshot.kimi-k2.5":
+		return "kimi-k2.5"
+	case "moonshot.kimi-k2-thinking", "moonshotai.kimi-k2-thinking":
+		return "kimi-k2-thinking"
+	case "zai.glm-5":
+		return "glm-5"
+	case "zai.glm-4.7-flash":
+		return "glm-4.7-flash"
+	case "openai.gpt-oss-20b-1:0":
+		return "gpt-oss-20b"
+	case "openai.gpt-oss-120b-1:0":
+		return "gpt-oss-120b"
+	}
 	return model
 }
 

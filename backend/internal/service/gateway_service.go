@@ -5118,8 +5118,32 @@ func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 
 	usage.InputTokens = int(usageNode.Get("input_tokens").Int())
 	usage.OutputTokens = int(usageNode.Get("output_tokens").Int())
+	if usage.InputTokens == 0 {
+		if v := usageNode.Get("prompt_tokens").Int(); v > 0 {
+			usage.InputTokens = int(v)
+		} else if v := usageNode.Get("inputTokens").Int(); v > 0 {
+			usage.InputTokens = int(v)
+		}
+	}
+	if usage.OutputTokens == 0 {
+		if v := usageNode.Get("completion_tokens").Int(); v > 0 {
+			usage.OutputTokens = int(v)
+		} else if v := usageNode.Get("outputTokens").Int(); v > 0 {
+			usage.OutputTokens = int(v)
+		}
+	}
 	usage.CacheCreationInputTokens = int(usageNode.Get("cache_creation_input_tokens").Int())
 	usage.CacheReadInputTokens = int(usageNode.Get("cache_read_input_tokens").Int())
+	if usage.CacheCreationInputTokens == 0 {
+		if v := usageNode.Get("cacheWriteInputTokens").Int(); v > 0 {
+			usage.CacheCreationInputTokens = int(v)
+		}
+	}
+	if usage.CacheReadInputTokens == 0 {
+		if v := usageNode.Get("cacheReadInputTokens").Int(); v > 0 {
+			usage.CacheReadInputTokens = int(v)
+		}
+	}
 
 	cc5m := usageNode.Get("cache_creation.ephemeral_5m_input_tokens").Int()
 	cc1h := usageNode.Get("cache_creation.ephemeral_1h_input_tokens").Int()
@@ -5540,9 +5564,7 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 		return nil, err
 	}
 
-	// 转换 Bedrock 特有的 amazon-bedrock-invocationMetrics 为标准 Anthropic usage 格式
-	// 并移除该字段避免透传给客户端
-	body = transformBedrockInvocationMetrics(body)
+	body = adaptBedrockNonStreamingBody(body)
 
 	usage := parseClaudeUsageFromResponseBody(body)
 

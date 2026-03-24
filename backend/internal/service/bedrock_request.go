@@ -8,153 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-const defaultBedrockRegion = "us-east-1"
-
-var bedrockCrossRegionPrefixes = []string{"us.", "eu.", "apac.", "jp.", "au.", "us-gov.", "global."}
-
-// BedrockCrossRegionPrefix 根据 AWS Region 返回 Bedrock 跨区域推理的模型 ID 前缀
-// 参考: https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-support.html
-func BedrockCrossRegionPrefix(region string) string {
-	switch {
-	case strings.HasPrefix(region, "us-gov"):
-		return "us-gov" // GovCloud 使用独立的 us-gov 前缀
-	case strings.HasPrefix(region, "us-"):
-		return "us"
-	case strings.HasPrefix(region, "eu-"):
-		return "eu"
-	case region == "ap-northeast-1":
-		return "jp" // 日本区域使用独立的 jp 前缀（AWS 官方定义）
-	case region == "ap-southeast-2":
-		return "au" // 澳大利亚区域使用独立的 au 前缀（AWS 官方定义）
-	case strings.HasPrefix(region, "ap-"):
-		return "apac" // 其余亚太区域使用通用 apac 前缀
-	case strings.HasPrefix(region, "ca-"):
-		return "us" // 加拿大区域使用 us 前缀的跨区域推理
-	case strings.HasPrefix(region, "sa-"):
-		return "us" // 南美区域使用 us 前缀的跨区域推理
-	default:
-		return "us"
-	}
-}
-
-// AdjustBedrockModelRegionPrefix 将模型 ID 的区域前缀替换为与当前 AWS Region 匹配的前缀
-// 例如 region=eu-west-1 时，"us.anthropic.claude-opus-4-6-v1" → "eu.anthropic.claude-opus-4-6-v1"
-// 特殊值 region="global" 强制使用 global. 前缀
-func AdjustBedrockModelRegionPrefix(modelID, region string) string {
-	var targetPrefix string
-	if region == "global" {
-		targetPrefix = "global"
-	} else {
-		targetPrefix = BedrockCrossRegionPrefix(region)
-	}
-
-	for _, p := range bedrockCrossRegionPrefixes {
-		if strings.HasPrefix(modelID, p) {
-			if p == targetPrefix+"." {
-				return modelID // 前缀已匹配，无需替换
-			}
-			return targetPrefix + "." + modelID[len(p):]
-		}
-	}
-
-	// 模型 ID 没有已知区域前缀（如 "anthropic.claude-..."），不做修改
-	return modelID
-}
-
-func bedrockRuntimeRegion(account *Account) string {
-	if account == nil {
-		return defaultBedrockRegion
-	}
-	if region := account.GetCredential("aws_region"); region != "" {
-		return region
-	}
-	return defaultBedrockRegion
-}
-
-func shouldForceBedrockGlobal(account *Account) bool {
-	return account != nil && account.GetCredential("aws_force_global") == "true"
-}
-
-func isRegionalBedrockModelID(modelID string) bool {
-	for _, prefix := range bedrockCrossRegionPrefixes {
-		if strings.HasPrefix(modelID, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func isLikelyBedrockModelID(modelID string) bool {
-	lower := strings.ToLower(strings.TrimSpace(modelID))
-	if lower == "" {
-		return false
-	}
-	if strings.HasPrefix(lower, "arn:") {
-		return true
-	}
-	for _, prefix := range []string{
-		"anthropic.",
-		"amazon.",
-		"meta.",
-		"mistral.",
-		"cohere.",
-		"ai21.",
-		"deepseek.",
-		"stability.",
-		"writer.",
-		"nova.",
-	} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	return isRegionalBedrockModelID(lower)
-}
-
-func normalizeBedrockModelID(modelID string) (normalized string, shouldAdjustRegion bool, ok bool) {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
-		return "", false, false
-	}
-	if mapped, exists := domain.DefaultBedrockModelMapping[modelID]; exists {
-		return mapped, true, true
-	}
-	if isRegionalBedrockModelID(modelID) {
-		return modelID, true, true
-	}
-	if isLikelyBedrockModelID(modelID) {
-		return modelID, false, true
-	}
-	return "", false, false
-}
-
-// ResolveBedrockModelID resolves a requested Claude model into a Bedrock model ID.
-// It applies account model_mapping first, then default Bedrock aliases, and finally
-// adjusts Anthropic cross-region prefixes to match the account region.
-func ResolveBedrockModelID(account *Account, requestedModel string) (string, bool) {
-	if account == nil {
-		return "", false
-	}
-
-	mappedModel := account.GetMappedModel(requestedModel)
-	modelID, shouldAdjustRegion, ok := normalizeBedrockModelID(mappedModel)
-	if !ok {
-		return "", false
-	}
-	if shouldAdjustRegion {
-		targetRegion := bedrockRuntimeRegion(account)
-		if shouldForceBedrockGlobal(account) {
-			targetRegion = "global"
-		}
-		modelID = AdjustBedrockModelRegionPrefix(modelID, targetRegion)
-	}
-	return modelID, true
-}
 
 // BuildBedrockURL 构建 Bedrock InvokeModel 的 URL
 // stream=true 时使用 invoke-with-response-stream 端点
@@ -188,20 +44,28 @@ func PrepareBedrockRequestBody(body []byte, modelID string, betaHeader string) (
 func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens []string) ([]byte, error) {
 	var err error
 
-	// 注入 anthropic_version（Bedrock 要求）
-	body, err = sjson.SetBytes(body, "anthropic_version", "bedrock-2023-05-31")
-	if err != nil {
-		return nil, fmt.Errorf("inject anthropic_version: %w", err)
-	}
-
-	// 注入 anthropic_beta（Bedrock Invoke 通过请求体传递 beta 头，而非 HTTP 头）
-	// 1. 从客户端 anthropic-beta header 解析
-	// 2. 根据请求体内容自动补齐必要的 beta token
-	//    参考 litellm: AnthropicModelInfo.get_anthropic_beta_list() + _get_tool_search_beta_header_for_bedrock()
-	if len(betaTokens) > 0 {
-		body, err = sjson.SetBytes(body, "anthropic_beta", betaTokens)
+	if isBedrockAnthropicModel(modelID) {
+		// 注入 anthropic_version（Bedrock 要求）
+		body, err = sjson.SetBytes(body, "anthropic_version", "bedrock-2023-05-31")
 		if err != nil {
-			return nil, fmt.Errorf("inject anthropic_beta: %w", err)
+			return nil, fmt.Errorf("inject anthropic_version: %w", err)
+		}
+
+		// 注入 anthropic_beta（Bedrock Invoke 通过请求体传递 beta 头，而非 HTTP 头）
+		if len(betaTokens) > 0 {
+			body, err = sjson.SetBytes(body, "anthropic_beta", betaTokens)
+			if err != nil {
+				return nil, fmt.Errorf("inject anthropic_beta: %w", err)
+			}
+		}
+	} else {
+		body, err = sjson.DeleteBytes(body, "anthropic_version")
+		if err != nil {
+			return nil, fmt.Errorf("remove anthropic_version field: %w", err)
+		}
+		body, err = sjson.DeleteBytes(body, "anthropic_beta")
+		if err != nil {
+			return nil, fmt.Errorf("remove anthropic_beta field: %w", err)
 		}
 	}
 
@@ -231,6 +95,9 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 	// Claude Code (v2.1.69+) 在 tool 定义中发送 custom: {defer_loading: true}，
 	// Anthropic API 接受但 Bedrock 会拒绝并报 "Extra inputs are not permitted"
 	body = removeCustomFieldFromTools(body)
+	body = convertBedrockThirdPartyMessages(body, modelID)
+	body = convertBedrockThirdPartyTools(body, modelID)
+	body = convertBedrockThirdPartyToolChoice(body, modelID)
 
 	// 清理 cache_control 中 Bedrock 不支持的字段
 	body = sanitizeBedrockCacheControl(body, modelID)

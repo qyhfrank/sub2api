@@ -43,6 +43,10 @@ archives:
       - LICENSE*
       - README*
       - deploy/*
+      - src: backend/resources/model-pricing/model_prices_and_context_window.json
+        dst: resources/model-pricing/model_prices_and_context_window.json
+      - src: backend/resources/model-pricing/model_prices_overrides.json
+        dst: resources/model-pricing/model_prices_overrides.json
 
 checksum:
   name_template: 'checksums.txt'

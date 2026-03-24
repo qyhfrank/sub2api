@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -47,6 +48,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
 	clientDisconnected := false
+	openAIStreamState := &bedrockOpenAIStreamState{openToolIndex: -1}
 
 	// Bedrock EventStream 使用 application/vnd.amazon.eventstream 二进制格式。
 	// 每个帧结构：total_length(4) + headers_length(4) + prelude_crc(4) + headers + payload + message_crc(4)
@@ -137,6 +139,30 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 			// 转换 Bedrock 特有的 amazon-bedrock-invocationMetrics 为标准 Anthropic usage 格式
 			// 同时移除该字段避免透传给客户端
 			sseData = transformBedrockInvocationMetrics(sseData)
+
+			convertedEvents, converted := convertBedrockOpenAIChunkToAnthropicEvents(sseData, openAIStreamState)
+			if converted {
+				wroteConvertedEvent := false
+				for _, convertedEvent := range convertedEvents {
+					applyBedrockConvertedUsage(usage, convertedEvent)
+					payload, err := json.Marshal(convertedEvent.Data)
+					if err != nil {
+						continue
+					}
+					if !clientDisconnected {
+						if _, writeErr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", convertedEvent.Event, payload); writeErr != nil {
+							clientDisconnected = true
+							logger.LegacyPrintf("service.gateway", "[Bedrock] Client disconnected during streaming, continue draining for usage: account=%d", account.ID)
+						} else {
+							wroteConvertedEvent = true
+						}
+					}
+				}
+				if wroteConvertedEvent && !clientDisconnected {
+					flusher.Flush()
+				}
+				continue
+			}
 
 			// 解析 SSE 事件数据提取 usage
 			s.parseSSEUsagePassthrough(string(sseData), usage)
