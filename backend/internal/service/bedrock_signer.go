@@ -34,6 +34,10 @@ func NewBedrockSigner(accessKeyID, secretAccessKey, sessionToken, region string)
 
 // NewBedrockSignerFromAccount 从 Account 凭证创建 BedrockSigner
 func NewBedrockSignerFromAccount(account *Account) (*BedrockSigner, error) {
+	return NewBedrockSignerFromAccountForRegion(account, "")
+}
+
+func NewBedrockSignerFromAccountForRegion(account *Account, region string) (*BedrockSigner, error) {
 	accessKeyID := account.GetCredential("aws_access_key_id")
 	if accessKeyID == "" {
 		return nil, fmt.Errorf("aws_access_key_id not found in credentials")
@@ -42,9 +46,11 @@ func NewBedrockSignerFromAccount(account *Account) (*BedrockSigner, error) {
 	if secretAccessKey == "" {
 		return nil, fmt.Errorf("aws_secret_access_key not found in credentials")
 	}
-	region := account.GetCredential("aws_region")
 	if region == "" {
-		region = defaultBedrockRegion
+		region = account.GetCredential("aws_region")
+		if region == "" {
+			region = defaultBedrockRegion
+		}
 	}
 	sessionToken := account.GetCredential("aws_session_token") // 可选
 
