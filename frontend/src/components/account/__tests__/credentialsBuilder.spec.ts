@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyInterceptWarmup } from '../credentialsBuilder'
+import { applyBedrockRouteCredentials, applyInterceptWarmup } from '../credentialsBuilder'
 
 describe('applyInterceptWarmup', () => {
   it('create + enabled=true: should set intercept_warmup_requests to true', () => {
@@ -42,5 +42,51 @@ describe('applyInterceptWarmup', () => {
     expect(creds.api_key).toBe('sk')
     expect(creds.base_url).toBe('url')
     expect('intercept_warmup_requests' in creds).toBe(false)
+  })
+})
+
+describe('applyBedrockRouteCredentials', () => {
+  it('off mode keeps legacy region and clears route keys', () => {
+    const creds: Record<string, unknown> = {
+      aws_region: 'eu-west-1',
+      aws_route_mode: 'all_routes',
+      aws_route_scope: 'us',
+      aws_route_preferred_region: 'us-east-1'
+    }
+
+    applyBedrockRouteCredentials(creds, {
+      mode: 'off',
+      region: 'eu-west-1',
+      forceGlobal: true,
+      routeScope: '',
+      preferredRegion: ''
+    })
+
+    expect(creds.aws_region).toBe('eu-west-1')
+    expect(creds.aws_force_global).toBe('true')
+    expect('aws_route_mode' in creds).toBe(false)
+    expect('aws_route_scope' in creds).toBe(false)
+    expect('aws_route_preferred_region' in creds).toBe(false)
+  })
+
+  it('all_routes mode preserves region, clears force_global, and writes route keys', () => {
+    const creds: Record<string, unknown> = {
+      aws_region: 'us-east-2',
+      aws_force_global: 'true'
+    }
+
+    applyBedrockRouteCredentials(creds, {
+      mode: 'all_routes',
+      region: 'us-east-2',
+      forceGlobal: true,
+      routeScope: 'eu',
+      preferredRegion: 'eu-central-1'
+    })
+
+    expect(creds.aws_region).toBe('us-east-2')
+    expect(creds.aws_route_mode).toBe('all_routes')
+    expect(creds.aws_route_scope).toBe('eu')
+    expect(creds.aws_route_preferred_region).toBe('eu-central-1')
+    expect('aws_force_global' in creds).toBe(false)
   })
 })

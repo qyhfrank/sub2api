@@ -610,29 +610,60 @@
           <p class="input-hint">{{ t('admin.accounts.bedrockApiKeyLeaveEmpty') }}</p>
         </div>
 
-        <!-- Shared: Region -->
         <div>
-          <label class="input-label">{{ t('admin.accounts.bedrockRegion') }}</label>
-          <input
-            v-model="editBedrockRegion"
-            type="text"
-            class="input"
-            placeholder="us-east-1"
-          />
-          <p class="input-hint">{{ t('admin.accounts.bedrockRegionHint') }}</p>
+          <label class="input-label">{{ t('admin.accounts.bedrockRouteMode') }}</label>
+          <select v-model="editBedrockRouteMode" class="input" data-testid="bedrock-route-mode">
+            <option value="off">{{ t('admin.accounts.bedrockRouteModeOff') }}</option>
+            <option value="all_routes">{{ t('admin.accounts.bedrockRouteModeAllRoutes') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.bedrockRouteModeHint') }}</p>
         </div>
 
-        <!-- Shared: Force Global -->
-        <div>
-          <label class="flex items-center gap-2 cursor-pointer">
+        <div v-if="editBedrockRouteMode === 'off'" data-testid="bedrock-legacy-settings">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.bedrockRegion') }}</label>
             <input
-              v-model="editBedrockForceGlobal"
-              type="checkbox"
-              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+              v-model="editBedrockRegion"
+              type="text"
+              class="input"
+              placeholder="us-east-1"
             />
-            <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.bedrockForceGlobal') }}</span>
-          </label>
-          <p class="input-hint mt-1">{{ t('admin.accounts.bedrockForceGlobalHint') }}</p>
+            <p class="input-hint">{{ t('admin.accounts.bedrockRegionHint') }}</p>
+          </div>
+
+          <div>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                v-model="editBedrockForceGlobal"
+                type="checkbox"
+                class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+              />
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.bedrockForceGlobal') }}</span>
+            </label>
+            <p class="input-hint mt-1">{{ t('admin.accounts.bedrockForceGlobalHint') }}</p>
+          </div>
+        </div>
+
+        <div v-else class="space-y-4" data-testid="bedrock-route-settings">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.bedrockRouteScope') }}</label>
+            <select v-model="editBedrockRouteScope" class="input" data-testid="bedrock-route-scope">
+              <option v-for="option in bedrockRouteScopeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <p class="input-hint">{{ t('admin.accounts.bedrockRouteScopeHint') }}</p>
+          </div>
+
+          <div>
+            <label class="input-label">{{ t('admin.accounts.bedrockRoutePreferredRegion') }}</label>
+            <input
+              v-model="editBedrockRoutePreferredRegion"
+              type="text"
+              class="input"
+              placeholder="us-east-1"
+              data-testid="bedrock-route-preferred-region"
+            />
+            <p class="input-hint">{{ t('admin.accounts.bedrockRoutePreferredRegionHint') }}</p>
+          </div>
         </div>
 
         <!-- Model Restriction for Bedrock -->
@@ -1717,7 +1748,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
-import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
+import { applyBedrockRouteCredentials, applyInterceptWarmup, type BedrockRouteMode } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import {
@@ -1763,6 +1794,16 @@ const baseUrlHint = computed(() => {
 
 const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
+const bedrockRouteScopeOptions = computed(() => [
+  { value: '', label: t('admin.accounts.bedrockRouteAllEligible') },
+  { value: 'on_demand', label: 'On-demand' },
+  { value: 'us', label: 'US' },
+  { value: 'eu', label: 'EU' },
+  { value: 'apac', label: 'APAC' },
+  { value: 'global', label: 'Global' },
+  { value: 'jp', label: 'JP' },
+  { value: 'au', label: 'AU' }
+])
 
 // Model mapping type
 interface ModelMapping {
@@ -1787,6 +1828,9 @@ const editBedrockSecretAccessKey = ref('')
 const editBedrockSessionToken = ref('')
 const editBedrockRegion = ref('')
 const editBedrockForceGlobal = ref(false)
+const editBedrockRouteMode = ref<BedrockRouteMode>('off')
+const editBedrockRouteScope = ref('')
+const editBedrockRoutePreferredRegion = ref('')
 const editBedrockApiKeyValue = ref('')
 const isBedrockAPIKeyMode = computed(() =>
   props.account?.type === 'bedrock' &&
@@ -2162,6 +2206,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     const authMode = (bedrockCreds.auth_mode as string) || 'sigv4'
     editBedrockRegion.value = (bedrockCreds.aws_region as string) || ''
     editBedrockForceGlobal.value = (bedrockCreds.aws_force_global as string) === 'true'
+    editBedrockRouteMode.value = bedrockCreds.aws_route_mode ? 'all_routes' : 'off'
+    editBedrockRouteScope.value = (bedrockCreds.aws_route_scope as string) || ''
+    editBedrockRoutePreferredRegion.value = (bedrockCreds.aws_route_preferred_region as string) || ''
 
     if (authMode === 'apikey') {
       editBedrockApiKeyValue.value = ''
@@ -2758,12 +2805,13 @@ const handleSubmit = async () => {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
-      newCredentials.aws_region = editBedrockRegion.value.trim()
-      if (editBedrockForceGlobal.value) {
-        newCredentials.aws_force_global = 'true'
-      } else {
-        delete newCredentials.aws_force_global
-      }
+      applyBedrockRouteCredentials(newCredentials, {
+        mode: editBedrockRouteMode.value,
+        region: editBedrockRegion.value,
+        forceGlobal: editBedrockForceGlobal.value,
+        routeScope: editBedrockRouteScope.value,
+        preferredRegion: editBedrockRoutePreferredRegion.value
+      })
 
       if (isBedrockAPIKeyMode.value) {
         // API Key mode: only update api_key if user provided new value

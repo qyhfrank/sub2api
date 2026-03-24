@@ -1380,58 +1380,89 @@
           />
         </div>
 
-        <!-- Shared: Region -->
         <div>
-          <label class="input-label">{{ t('admin.accounts.bedrockRegion') }}</label>
-          <select v-model="bedrockRegion" class="input">
-            <optgroup label="US">
-              <option value="us-east-1">us-east-1 (N. Virginia)</option>
-              <option value="us-east-2">us-east-2 (Ohio)</option>
-              <option value="us-west-1">us-west-1 (N. California)</option>
-              <option value="us-west-2">us-west-2 (Oregon)</option>
-              <option value="us-gov-east-1">us-gov-east-1 (GovCloud US-East)</option>
-              <option value="us-gov-west-1">us-gov-west-1 (GovCloud US-West)</option>
-            </optgroup>
-            <optgroup label="Europe">
-              <option value="eu-west-1">eu-west-1 (Ireland)</option>
-              <option value="eu-west-2">eu-west-2 (London)</option>
-              <option value="eu-west-3">eu-west-3 (Paris)</option>
-              <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
-              <option value="eu-central-2">eu-central-2 (Zurich)</option>
-              <option value="eu-south-1">eu-south-1 (Milan)</option>
-              <option value="eu-south-2">eu-south-2 (Spain)</option>
-              <option value="eu-north-1">eu-north-1 (Stockholm)</option>
-            </optgroup>
-            <optgroup label="Asia Pacific">
-              <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
-              <option value="ap-northeast-2">ap-northeast-2 (Seoul)</option>
-              <option value="ap-northeast-3">ap-northeast-3 (Osaka)</option>
-              <option value="ap-south-1">ap-south-1 (Mumbai)</option>
-              <option value="ap-south-2">ap-south-2 (Hyderabad)</option>
-              <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
-              <option value="ap-southeast-2">ap-southeast-2 (Sydney)</option>
-            </optgroup>
-            <optgroup label="Canada">
-              <option value="ca-central-1">ca-central-1 (Canada)</option>
-            </optgroup>
-            <optgroup label="South America">
-              <option value="sa-east-1">sa-east-1 (São Paulo)</option>
-            </optgroup>
+          <label class="input-label">{{ t('admin.accounts.bedrockRouteMode') }}</label>
+          <select v-model="bedrockRouteMode" class="input" data-testid="bedrock-route-mode">
+            <option value="off">{{ t('admin.accounts.bedrockRouteModeOff') }}</option>
+            <option value="all_routes">{{ t('admin.accounts.bedrockRouteModeAllRoutes') }}</option>
           </select>
-          <p class="input-hint">{{ t('admin.accounts.bedrockRegionHint') }}</p>
+          <p class="input-hint">{{ t('admin.accounts.bedrockRouteModeHint') }}</p>
         </div>
 
-        <!-- Shared: Force Global -->
-        <div>
-          <label class="flex items-center gap-2 cursor-pointer">
+        <div v-if="bedrockRouteMode === 'off'" data-testid="bedrock-legacy-settings">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.bedrockRegion') }}</label>
+            <select v-model="bedrockRegion" class="input">
+              <optgroup label="US">
+                <option value="us-east-1">us-east-1 (N. Virginia)</option>
+                <option value="us-east-2">us-east-2 (Ohio)</option>
+                <option value="us-west-1">us-west-1 (N. California)</option>
+                <option value="us-west-2">us-west-2 (Oregon)</option>
+                <option value="us-gov-east-1">us-gov-east-1 (GovCloud US-East)</option>
+                <option value="us-gov-west-1">us-gov-west-1 (GovCloud US-West)</option>
+              </optgroup>
+              <optgroup label="Europe">
+                <option value="eu-west-1">eu-west-1 (Ireland)</option>
+                <option value="eu-west-2">eu-west-2 (London)</option>
+                <option value="eu-west-3">eu-west-3 (Paris)</option>
+                <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
+                <option value="eu-central-2">eu-central-2 (Zurich)</option>
+                <option value="eu-south-1">eu-south-1 (Milan)</option>
+                <option value="eu-south-2">eu-south-2 (Spain)</option>
+                <option value="eu-north-1">eu-north-1 (Stockholm)</option>
+              </optgroup>
+              <optgroup label="Asia Pacific">
+                <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+                <option value="ap-northeast-2">ap-northeast-2 (Seoul)</option>
+                <option value="ap-northeast-3">ap-northeast-3 (Osaka)</option>
+                <option value="ap-south-1">ap-south-1 (Mumbai)</option>
+                <option value="ap-south-2">ap-south-2 (Hyderabad)</option>
+                <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
+                <option value="ap-southeast-2">ap-southeast-2 (Sydney)</option>
+              </optgroup>
+              <optgroup label="Canada">
+                <option value="ca-central-1">ca-central-1 (Canada)</option>
+              </optgroup>
+              <optgroup label="South America">
+                <option value="sa-east-1">sa-east-1 (Sao Paulo)</option>
+              </optgroup>
+            </select>
+            <p class="input-hint">{{ t('admin.accounts.bedrockRegionHint') }}</p>
+          </div>
+
+          <div>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                v-model="bedrockForceGlobal"
+                type="checkbox"
+                class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+              />
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.bedrockForceGlobal') }}</span>
+            </label>
+            <p class="input-hint mt-1">{{ t('admin.accounts.bedrockForceGlobalHint') }}</p>
+          </div>
+        </div>
+
+        <div v-else class="space-y-4" data-testid="bedrock-route-settings">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.bedrockRouteScope') }}</label>
+            <select v-model="bedrockRouteScope" class="input" data-testid="bedrock-route-scope">
+              <option v-for="option in bedrockRouteScopeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <p class="input-hint">{{ t('admin.accounts.bedrockRouteScopeHint') }}</p>
+          </div>
+
+          <div>
+            <label class="input-label">{{ t('admin.accounts.bedrockRoutePreferredRegion') }}</label>
             <input
-              v-model="bedrockForceGlobal"
-              type="checkbox"
-              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+              v-model="bedrockRoutePreferredRegion"
+              type="text"
+              class="input"
+              placeholder="us-east-1"
+              data-testid="bedrock-route-preferred-region"
             />
-            <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.bedrockForceGlobal') }}</span>
-          </label>
-          <p class="input-hint mt-1">{{ t('admin.accounts.bedrockForceGlobalHint') }}</p>
+            <p class="input-hint">{{ t('admin.accounts.bedrockRoutePreferredRegionHint') }}</p>
+          </div>
         </div>
 
         <!-- Model Restriction Section for Bedrock -->
@@ -2869,7 +2900,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
-import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
+import { applyBedrockRouteCredentials, applyInterceptWarmup, type BedrockRouteMode } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import {
@@ -3029,6 +3060,16 @@ const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
 const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
+const bedrockRouteScopeOptions = computed(() => [
+  { value: '', label: t('admin.accounts.bedrockRouteAllEligible') },
+  { value: 'on_demand', label: 'On-demand' },
+  { value: 'us', label: 'US' },
+  { value: 'eu', label: 'EU' },
+  { value: 'apac', label: 'APAC' },
+  { value: 'global', label: 'Global' },
+  { value: 'jp', label: 'JP' },
+  { value: 'au', label: 'AU' }
+])
 
 // Bedrock credentials
 const bedrockAuthMode = ref<'sigv4' | 'apikey'>('sigv4')
@@ -3037,6 +3078,9 @@ const bedrockSecretAccessKey = ref('')
 const bedrockSessionToken = ref('')
 const bedrockRegion = ref('us-east-1')
 const bedrockForceGlobal = ref(false)
+const bedrockRouteMode = ref<BedrockRouteMode>('off')
+const bedrockRouteScope = ref('')
+const bedrockRoutePreferredRegion = ref('')
 const bedrockApiKeyValue = ref('')
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
@@ -3329,6 +3373,9 @@ watch(
     bedrockSessionToken.value = ''
     bedrockRegion.value = 'us-east-1'
     bedrockForceGlobal.value = false
+    bedrockRouteMode.value = 'off'
+    bedrockRouteScope.value = ''
+    bedrockRoutePreferredRegion.value = ''
     bedrockAuthMode.value = 'sigv4'
     bedrockApiKeyValue.value = ''
     // Reset Anthropic/Antigravity-specific settings when switching to other platforms
@@ -3916,7 +3963,6 @@ const handleSubmit = async () => {
 
     const credentials: Record<string, unknown> = {
       auth_mode: bedrockAuthMode.value,
-      aws_region: bedrockRegion.value.trim() || 'us-east-1',
     }
 
     if (bedrockAuthMode.value === 'sigv4') {
@@ -3941,9 +3987,13 @@ const handleSubmit = async () => {
       credentials.api_key = bedrockApiKeyValue.value.trim()
     }
 
-    if (bedrockForceGlobal.value) {
-      credentials.aws_force_global = 'true'
-    }
+    applyBedrockRouteCredentials(credentials, {
+      mode: bedrockRouteMode.value,
+      region: bedrockRegion.value,
+      forceGlobal: bedrockForceGlobal.value,
+      routeScope: bedrockRouteScope.value,
+      preferredRegion: bedrockRoutePreferredRegion.value
+    })
 
     // Model mapping
     const modelMapping = buildModelMappingObject(

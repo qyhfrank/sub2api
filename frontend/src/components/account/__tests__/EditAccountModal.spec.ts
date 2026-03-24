@@ -108,6 +108,36 @@ function buildAccount() {
   } as any
 }
 
+function buildBedrockAccount() {
+  return {
+    id: 2,
+    name: 'Bedrock Routed',
+    notes: '',
+    platform: 'anthropic',
+    type: 'bedrock',
+    credentials: {
+      auth_mode: 'sigv4',
+      aws_region: 'us-east-2',
+      aws_route_mode: 'all_routes',
+      aws_route_scope: 'eu',
+      aws_route_preferred_region: 'eu-central-1',
+      aws_access_key_id: 'AKIA123',
+      model_mapping: {
+        'claude-sonnet-4-6': 'claude-sonnet-4-6'
+      }
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function mountModal(account = buildAccount()) {
   return mount(EditAccountModal, {
     props: {
@@ -155,5 +185,31 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
       'gpt-5.2': 'gpt-5.2'
     })
+  })
+
+  it('bedrock all_routes mode hides legacy controls and saves routed credentials', async () => {
+    const account = buildBedrockAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="bedrock-legacy-settings"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="bedrock-route-settings"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="bedrock-route-scope"]').setValue('global')
+    await wrapper.get('[data-testid="bedrock-route-preferred-region"]').setValue('us-east-1')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      aws_region: 'us-east-2',
+      aws_route_mode: 'all_routes',
+      aws_route_scope: 'global',
+      aws_route_preferred_region: 'us-east-1'
+    })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.aws_force_global).toBeUndefined()
   })
 })
