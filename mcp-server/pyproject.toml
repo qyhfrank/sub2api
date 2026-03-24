@@ -9,7 +9,8 @@ dependencies = [
 ]
 
 [project.scripts]
-sub2api-mcp = "sub2api_mcp:main"
+sub2api = "sub2api_mcp.cli:main"
+sub2api-mcp = "sub2api_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

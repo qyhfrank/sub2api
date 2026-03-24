@@ -34,6 +34,9 @@ def register_tools(mcp):
         username: str = "",
         notes: str = "",
         balance: float = 0,
+        concurrency: int = 0,
+        allowed_groups: list[int] | None = None,
+        sora_storage_quota_bytes: int = 0,
     ) -> dict:
         """Create a new user account."""
         data: dict = {"email": email, "password": password, "balance": balance}
@@ -41,6 +44,12 @@ def register_tools(mcp):
             data["username"] = username
         if notes:
             data["notes"] = notes
+        if concurrency:
+            data["concurrency"] = concurrency
+        if allowed_groups is not None:
+            data["allowed_groups"] = allowed_groups
+        if sora_storage_quota_bytes:
+            data["sora_storage_quota_bytes"] = sora_storage_quota_bytes
         return await api_post("/api/v1/admin/users", json=data)
 
     @mcp.tool()
@@ -54,8 +63,14 @@ def register_tools(mcp):
         concurrency: int | None = None,
         status: str = "",
         allowed_groups: list[int] | None = None,
+        group_rates: dict | None = None,
+        sora_storage_quota_bytes: int | None = None,
     ) -> dict:
-        """Update a user. Only provided (non-empty/non-None) fields are sent."""
+        """Update a user. Only provided (non-empty/non-None) fields are sent.
+
+        group_rates: per-group billing rate overrides, e.g. {"1": 1.5, "2": null}.
+        A null value removes the override for that group.
+        """
         data: dict = {}
         if email:
             data["email"] = email
@@ -73,6 +88,10 @@ def register_tools(mcp):
             data["status"] = status
         if allowed_groups is not None:
             data["allowed_groups"] = allowed_groups
+        if group_rates is not None:
+            data["group_rates"] = group_rates
+        if sora_storage_quota_bytes is not None:
+            data["sora_storage_quota_bytes"] = sora_storage_quota_bytes
         return await api_put(f"/api/v1/admin/users/{user_id}", json=data)
 
     @mcp.tool()

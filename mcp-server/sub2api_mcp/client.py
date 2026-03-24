@@ -1,33 +1,34 @@
 """Async HTTP client for Sub2API admin endpoints."""
 
-import os
 from typing import Any
 
 import httpx
 
-BASE_URL = os.environ.get("SUB2API_BASE_URL", "http://localhost:20165")
-API_TOKEN = os.environ.get("SUB2API_TOKEN", "")
+from sub2api_mcp.config import configure, get_config, reset_config
 
 
-def _auth_headers() -> dict[str, str]:
+def _auth_headers(api_token: str) -> dict[str, str]:
     """Build auth headers based on token format.
 
     Tokens starting with 'admin-' use the x-api-key header;
     all others use Authorization: Bearer.
     """
     headers: dict[str, str] = {"Content-Type": "application/json"}
-    if API_TOKEN.startswith("admin-"):
-        headers["x-api-key"] = API_TOKEN
+    if not api_token:
+        return headers
+    if api_token.startswith("admin-"):
+        headers["x-api-key"] = api_token
     else:
-        headers["Authorization"] = f"Bearer {API_TOKEN}"
+        headers["Authorization"] = f"Bearer {api_token}"
     return headers
 
 
 def _client() -> httpx.AsyncClient:
+    config = get_config()
     return httpx.AsyncClient(
-        base_url=BASE_URL,
-        headers=_auth_headers(),
-        timeout=30.0,
+        base_url=config.base_url,
+        headers=_auth_headers(config.api_token),
+        timeout=config.timeout,
     )
 
 
