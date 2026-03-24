@@ -167,14 +167,11 @@ func (s *PricingService) startUpdateScheduler() {
 func (s *PricingService) checkAndUpdatePricing() error {
 	pricingFile := s.getPricingFilePath()
 
-	// 检查本地文件是否存在
-	if _, err := os.Stat(pricingFile); os.IsNotExist(err) {
+	info, err := os.Stat(pricingFile)
+	if os.IsNotExist(err) {
 		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Local pricing file not found, downloading...")
 		return s.downloadPricingData()
 	}
-
-	// 检查文件是否过期
-	info, err := os.Stat(pricingFile)
 	if err != nil {
 		return s.downloadPricingData()
 	}
@@ -272,6 +269,10 @@ func (s *PricingService) downloadPricingData() error {
 	data, err := s.parsePricingData(body)
 	if err != nil {
 		return fmt.Errorf("parse pricing data: %w", err)
+	}
+	data, err = s.applyPricingOverrides(data)
+	if err != nil {
+		return fmt.Errorf("apply pricing overrides: %w", err)
 	}
 
 	// 保存到本地文件
@@ -389,6 +390,10 @@ func (s *PricingService) loadPricingData(filePath string) error {
 	if err != nil {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
+	pricingData, err = s.applyPricingOverrides(pricingData)
+	if err != nil {
+		return fmt.Errorf("apply pricing overrides: %w", err)
+	}
 
 	// 计算哈希
 	hash := sha256.Sum256(data)
@@ -408,6 +413,46 @@ func (s *PricingService) loadPricingData(filePath string) error {
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Loaded %d models from %s", len(pricingData), filePath)
 	return nil
+}
+
+func (s *PricingService) applyPricingOverrides(base map[string]*LiteLLMModelPricing) (map[string]*LiteLLMModelPricing, error) {
+	if len(base) == 0 {
+		return base, nil
+	}
+	overrideFile := ""
+	if s != nil && s.cfg != nil {
+		overrideFile = strings.TrimSpace(s.cfg.Pricing.OverrideFile)
+	}
+	if overrideFile == "" {
+		return base, nil
+	}
+
+	body, err := os.ReadFile(overrideFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			logger.LegacyPrintf("service.pricing", "[Pricing] Override file not found, skip: %s", overrideFile)
+			return base, nil
+		}
+		return nil, fmt.Errorf("read override file failed: %w", err)
+	}
+
+	overrides, err := s.parsePricingData(body)
+	if err != nil {
+		return nil, fmt.Errorf("parse override pricing data: %w", err)
+	}
+	if len(overrides) == 0 {
+		return base, nil
+	}
+
+	merged := make(map[string]*LiteLLMModelPricing, len(base)+len(overrides))
+	for key, pricing := range base {
+		merged[key] = pricing
+	}
+	for key, pricing := range overrides {
+		merged[key] = pricing
+	}
+	logger.LegacyPrintf("service.pricing", "[Pricing] Applied %d override models from %s", len(overrides), overrideFile)
+	return merged, nil
 }
 
 // useFallbackPricing 使用回退价格文件

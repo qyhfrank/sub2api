@@ -1,0 +1,47 @@
+{
+  "deepseek-v3-2-251201": {
+    "input_cost_per_token": 0.00000026,
+    "output_cost_per_token": 0.00000038,
+    "cache_read_input_token_cost": 0.00000013,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  },
+  "kimi-k2.5": {
+    "input_cost_per_token": 0.0000006,
+    "output_cost_per_token": 0.000003,
+    "cache_read_input_token_cost": 0.0000001,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  },
+  "kimi-k2-thinking": {
+    "input_cost_per_token": 0.0000006,
+    "output_cost_per_token": 0.0000025,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  },
+  "glm-4.7-flash": {
+    "input_cost_per_token": 0.00000007,
+    "output_cost_per_token": 0.0000004,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  },
+  "glm-5": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.0000032,
+    "cache_read_input_token_cost": 0.0000002,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  },
+  "gpt-oss-20b": {
+    "input_cost_per_token": 0.0000001,
+    "output_cost_per_token": 0.0000005,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  },
+  "gpt-oss-120b": {
+    "input_cost_per_token": 0.00000015,
+    "output_cost_per_token": 0.00000075,
+    "litellm_provider": "bedrock",
+    "mode": "chat"
+  }
+}
