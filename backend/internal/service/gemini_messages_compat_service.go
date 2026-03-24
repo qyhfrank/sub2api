@@ -2931,12 +2931,6 @@ type gemini429Info struct {
 	retryDelay      time.Duration // from "Please retry in Xs" or "reset after Xs"
 }
 
-const (
-	// geminiMinModelCooldown prevents setting model-level rate limits shorter than
-	// the DB write + cache sync latency. A 0s or 1s limit expires before it takes effect.
-	geminiMinModelCooldown = 5 * time.Second
-)
-
 // parseGemini429Info extracts rate limit information from a Gemini 429 response.
 func parseGemini429Info(body []byte) gemini429Info {
 	var info gemini429Info
@@ -3007,35 +3001,6 @@ func looksLikeGeminiServerOverloadBody(body []byte) bool {
 func looksLikeGeminiServerOverload(message string) bool {
 	m := strings.ToLower(message)
 	return strings.Contains(m, "no capacity available")
-}
-
-func (s *GeminiMessagesCompatService) geminiTierCooldown(ctx context.Context, account *Account, tierID string) time.Duration {
-	cooldown := geminiCooldownForTier(tierID)
-	if s.rateLimitService != nil {
-		cooldown = s.rateLimitService.GeminiCooldown(ctx, account)
-	}
-	return cooldown
-}
-
-func (s *GeminiMessagesCompatService) updateGeminiModelRateLimitInCache(ctx context.Context, account *Account, modelKey string, resetAt time.Time) {
-	if s.schedulerSnapshot == nil || account == nil || modelKey == "" {
-		return
-	}
-	if account.Extra == nil {
-		account.Extra = make(map[string]any)
-	}
-	limits, _ := account.Extra["model_rate_limits"].(map[string]any)
-	if limits == nil {
-		limits = make(map[string]any)
-		account.Extra["model_rate_limits"] = limits
-	}
-	limits[modelKey] = map[string]any{
-		"rate_limited_at":     time.Now().UTC().Format(time.RFC3339),
-		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
-	}
-	if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
-		log.Printf("[Gemini 429] cache_update_failed account=%d model=%s err=%v", account.ID, modelKey, err)
-	}
 }
 
 func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string) {

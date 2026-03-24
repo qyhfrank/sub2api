@@ -77,7 +77,7 @@ func TestResolveBedrockRoutePolicy(t *testing.T) {
 
 	t.Run("route mode conflicts with force global", func(t *testing.T) {
 		account := &Account{Credentials: map[string]any{
-			"aws_route_mode":  "all_routes",
+			"aws_route_mode":   "all_routes",
 			"aws_force_global": "true",
 		}}
 

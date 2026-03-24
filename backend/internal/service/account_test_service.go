@@ -324,12 +324,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 // testBedrockAccountConnection tests a Bedrock (SigV4 or API Key) account using non-streaming invoke
 func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
-	region := bedrockRuntimeRegion(account)
-	resolvedModelID, ok := ResolveBedrockModelID(account, testModelID)
-	if !ok {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported Bedrock model: %s", testModelID))
+	target, err := PreviewBedrockInvocationTarget(account, testModelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
 	}
-	testModelID = resolvedModelID
+	testModelID = target.InvocationModel
 
 	// Set SSE headers (test UI expects SSE)
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -358,7 +357,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 	bedrockBody, _ := json.Marshal(bedrockPayload)
 
 	// Use non-streaming endpoint (response is standard Claude JSON)
-	apiURL := BuildBedrockURL(region, testModelID, false)
+	apiURL := BuildBedrockURL(target.RuntimeRegion, testModelID, false)
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
@@ -376,7 +375,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	} else {
-		signer, err := NewBedrockSignerFromAccount(account)
+		signer, err := NewBedrockSignerFromAccountForRegion(account, target.RuntimeRegion)
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to create Bedrock signer: %s", err.Error()))
 		}

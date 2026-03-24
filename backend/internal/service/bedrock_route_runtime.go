@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 type BedrockInvocationTarget struct {
@@ -15,10 +16,10 @@ type BedrockInvocationTarget struct {
 }
 
 type BedrockRoutePool struct {
-	routes     []BedrockRoute
-	nextIndex  int
-	cooldowns  map[BedrockRouteKey]int64
-	mu         sync.Mutex
+	routes    []BedrockRoute
+	nextIndex int
+	cooldowns map[BedrockRouteKey]int64
+	mu        sync.Mutex
 }
 
 type bedrockRoutePoolRegistry struct {
@@ -40,6 +41,16 @@ func NewBedrockRoutePool(routes []BedrockRoute) *BedrockRoutePool {
 func (p *BedrockRoutePool) SelectNextRoute(now int64) (BedrockRoute, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.nextRoute(now, true)
+}
+
+func (p *BedrockRoutePool) PeekNextRoute(now int64) (BedrockRoute, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nextRoute(now, false)
+}
+
+func (p *BedrockRoutePool) nextRoute(now int64, advance bool) (BedrockRoute, bool) {
 
 	if len(p.routes) == 0 {
 		return BedrockRoute{}, false
@@ -51,7 +62,9 @@ func (p *BedrockRoutePool) SelectNextRoute(now int64) (BedrockRoute, bool) {
 		if blockedUntil, ok := p.cooldowns[route.Key]; ok && now < blockedUntil {
 			continue
 		}
-		p.nextIndex = (idx + 1) % len(p.routes)
+		if advance {
+			p.nextIndex = (idx + 1) % len(p.routes)
+		}
 		return route, true
 	}
 	return BedrockRoute{}, false
@@ -64,6 +77,23 @@ func (p *BedrockRoutePool) MarkCooldown(key BedrockRouteKey, blockedUntil int64)
 }
 
 func ResolveBedrockInvocationTarget(account *Account, requestedModel string) (BedrockInvocationTarget, error) {
+	return resolveBedrockInvocationTarget(account, requestedModel, true)
+}
+
+func ValidateBedrockInvocationTarget(account *Account, requestedModel string) error {
+	support, ok := ResolveBedrockModelSupport(account, requestedModel)
+	if !ok {
+		return fmt.Errorf("unsupported bedrock model: %s", requestedModel)
+	}
+	_, err := ResolveBedrockRoutePolicy(account, support.CanonicalModel)
+	return err
+}
+
+func PreviewBedrockInvocationTarget(account *Account, requestedModel string) (BedrockInvocationTarget, error) {
+	return resolveBedrockInvocationTarget(account, requestedModel, false)
+}
+
+func resolveBedrockInvocationTarget(account *Account, requestedModel string, advancePool bool) (BedrockInvocationTarget, error) {
 	support, ok := ResolveBedrockModelSupport(account, requestedModel)
 	if !ok {
 		return BedrockInvocationTarget{}, fmt.Errorf("unsupported bedrock model: %s", requestedModel)
@@ -96,7 +126,7 @@ func ResolveBedrockInvocationTarget(account *Account, requestedModel string) (Be
 			return BedrockInvocationTarget{}, err
 		}
 	case "all_routes":
-		selected, err = selectAllRoutesBedrockTarget(account, support.CanonicalModel, policy, routes)
+		selected, err = selectAllRoutesBedrockTarget(account, support.CanonicalModel, policy, routes, advancePool)
 		if err != nil {
 			return BedrockInvocationTarget{}, err
 		}
@@ -132,21 +162,39 @@ func selectSingleBedrockRoute(routes []BedrockRoute, policy BedrockRoutePolicy, 
 	return routes[0], nil
 }
 
-func selectAllRoutesBedrockTarget(account *Account, canonicalModel string, policy BedrockRoutePolicy, routes []BedrockRoute) (BedrockRoute, error) {
-	pool := runtimeBedrockRoutePools.getOrCreate(routePoolRegistryKey(account, canonicalModel, policy), routes)
-	route, ok := pool.SelectNextRoute(0)
+func selectAllRoutesBedrockTarget(account *Account, canonicalModel string, policy BedrockRoutePolicy, routes []BedrockRoute, advancePool bool) (BedrockRoute, error) {
+	pool := runtimeBedrockRoutePools.getOrCreate(routePoolRegistryKey(account, canonicalModel, policy), prioritizeBedrockRoutes(routes, policy))
+	var (
+		route BedrockRoute
+		ok    bool
+	)
+	if advancePool {
+		route, ok = pool.SelectNextRoute(time.Now().Unix())
+	} else {
+		route, ok = pool.PeekNextRoute(time.Now().Unix())
+	}
 	if !ok {
 		return BedrockRoute{}, fmt.Errorf("no healthy route available for %q", canonicalModel)
 	}
-	if policy.PreferredRegion == "" {
-		return route, nil
-	}
-	for _, candidate := range routes {
-		if candidate.Key.RuntimeRegion == policy.PreferredRegion {
-			return candidate, nil
-		}
-	}
 	return route, nil
+}
+
+func prioritizeBedrockRoutes(routes []BedrockRoute, policy BedrockRoutePolicy) []BedrockRoute {
+	ordered := make([]BedrockRoute, len(routes))
+	copy(ordered, routes)
+	if policy.PreferredRegion == "" {
+		return ordered
+	}
+	preferred := make([]BedrockRoute, 0, len(routes))
+	remaining := make([]BedrockRoute, 0, len(routes))
+	for _, route := range ordered {
+		if route.Key.RuntimeRegion == policy.PreferredRegion {
+			preferred = append(preferred, route)
+			continue
+		}
+		remaining = append(remaining, route)
+	}
+	return append(preferred, remaining...)
 }
 
 func routePoolRegistryKey(account *Account, canonicalModel string, policy BedrockRoutePolicy) string {
@@ -154,7 +202,7 @@ func routePoolRegistryKey(account *Account, canonicalModel string, policy Bedroc
 	if account != nil {
 		accountID = account.ID
 	}
-	return fmt.Sprintf("%d/%s/%s/%s", accountID, canonicalModel, policy.Mode, policy.Scope)
+	return fmt.Sprintf("%d/%s/%s/%s/%s", accountID, canonicalModel, policy.Mode, policy.Scope, policy.PreferredRegion)
 }
 
 func (r *bedrockRoutePoolRegistry) getOrCreate(key string, routes []BedrockRoute) *BedrockRoutePool {
