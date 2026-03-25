@@ -2535,6 +2535,7 @@
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'sora' || form.platform === 'antigravity'"
+        :show-mobile-refresh-token-option="form.platform === 'openai'"
         :show-session-token-option="form.platform === 'sora'"
         :show-access-token-option="form.platform === 'sora'"
         :platform="form.platform"
@@ -2543,6 +2544,7 @@
         @invalidate-auth-session="handleInvalidateAuthSession"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
+        @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
         @import-access-token="handleImportAccessToken"
       />
@@ -4423,11 +4425,14 @@ const handleOpenAIExchange = async (authCode: string) => {
 }
 
 // OpenAI 手动 RT 批量验证和创建
-const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
+// OpenAI Mobile RT 使用的 client_id（与后端 openai.SoraClientID 一致）
+const OPENAI_MOBILE_RT_CLIENT_ID = 'app_LlGpXReQgckcGGUo2JrYvtJK'
+
+// OpenAI/Sora RT 批量验证和创建（共享逻辑）
+const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string) => {
   const oauthClient = activeOpenAIOAuth.value
   if (!refreshTokenInput.trim()) return
 
-  // Parse multiple refresh tokens (one per line)
   const refreshTokens = refreshTokenInput
     .split('\n')
     .map((rt) => rt.trim())
@@ -4452,7 +4457,8 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
       try {
         const tokenInfo = await oauthClient.validateRefreshToken(
           refreshTokens[i],
-          form.proxy_id
+          form.proxy_id,
+          clientId
         )
         if (!tokenInfo) {
           failedCount++
@@ -4462,6 +4468,9 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
         }
 
         const credentials = oauthClient.buildCredentials(tokenInfo)
+        if (clientId) {
+          credentials.client_id = clientId
+        }
         const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
         const extra = buildOpenAIExtra(oauthExtra)
 
@@ -4473,8 +4482,9 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
           }
         }
 
-        // Generate account name with index for batch
-        const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+        // Generate account name; fallback to email if name is empty (ent schema requires NotEmpty)
+        const baseName = form.name || tokenInfo.email || 'OpenAI OAuth Account'
+        const accountName = refreshTokens.length > 1 ? `${baseName} #${i + 1}` : baseName
 
         let openaiAccountId: string | number | undefined
 
@@ -4556,6 +4566,12 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
     oauthClient.loading.value = false
   }
 }
+
+// 手动输入 RT（Codex CLI client_id，默认）
+const handleOpenAIValidateRT = (rt: string) => handleOpenAIBatchRT(rt)
+
+// 手动输入 Mobile RT（SoraClientID）
+const handleOpenAIValidateMobileRT = (rt: string) => handleOpenAIBatchRT(rt, OPENAI_MOBILE_RT_CLIENT_ID)
 
 // Sora 手动 ST 批量验证和创建
 const handleSoraValidateST = async (sessionTokenInput: string) => {
