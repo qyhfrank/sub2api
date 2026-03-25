@@ -101,7 +101,6 @@ func TestGetModelPricing_Gpt54UsesStaticFallbackWhenRemoteMissing(t *testing.T) 
 	require.InDelta(t, 1.5, got.LongContextOutputCostMultiplier, 1e-12)
 }
 
-<<<<<<< HEAD
 func TestGetModelPricing_BedrockDeepSeekAliasesResolveToCanonicalPricingKeys(t *testing.T) {
 	deepseekV32Pricing := &LiteLLMModelPricing{InputCostPerToken: 3}
 	deepseekR1Pricing := &LiteLLMModelPricing{InputCostPerToken: 7}
