@@ -1535,6 +1535,14 @@
               />
             </button>
           </div>
+          <!-- Profile selector -->
+          <div v-if="tlsFingerprintEnabled" class="mt-3">
+            <select v-model="tlsFingerprintProfileId" class="input">
+              <option :value="null">{{ t('admin.accounts.quotaControl.tlsFingerprint.defaultProfile') }}</option>
+              <option v-if="tlsFingerprintProfiles.length > 0" :value="-1">{{ t('admin.accounts.quotaControl.tlsFingerprint.randomProfile') }}</option>
+              <option v-for="p in tlsFingerprintProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+          </div>
         </div>
 
         <!-- Session ID Masking -->
@@ -1885,6 +1893,8 @@ const umqModeOptions = computed(() => [
   { value: 'serialize', label: t('admin.accounts.quotaControl.rpmLimit.umqModeSerialize') },
 ])
 const tlsFingerprintEnabled = ref(false)
+const tlsFingerprintProfileId = ref<number | null>(null)
+const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
@@ -2302,10 +2312,20 @@ watch(
     }
     if (!wasShow || newAccount !== previousAccount) {
       syncFormFromAccount(newAccount)
+      loadTLSProfiles()
     }
   },
   { immediate: true }
 )
+
+const loadTLSProfiles = async () => {
+  try {
+    const profiles = await adminAPI.tlsFingerprintProfiles.list()
+    tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name }))
+  } catch {
+    tlsFingerprintProfiles.value = []
+  }
+}
 
 // Model mapping helpers
 const addModelMapping = () => {
@@ -2505,6 +2525,7 @@ function loadQuotaControlSettings(account: Account) {
   rpmStickyBuffer.value = null
   userMsgQueueMode.value = ''
   tlsFingerprintEnabled.value = false
+  tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
@@ -2542,6 +2563,7 @@ function loadQuotaControlSettings(account: Account) {
   if (account.enable_tls_fingerprint === true) {
     tlsFingerprintEnabled.value = true
   }
+  tlsFingerprintProfileId.value = account.tls_fingerprint_profile_id ?? null
 
   // Load session ID masking setting
   if (account.session_id_masking_enabled === true) {
@@ -2980,8 +3002,14 @@ const handleSubmit = async () => {
       // TLS fingerprint setting
       if (tlsFingerprintEnabled.value) {
         newExtra.enable_tls_fingerprint = true
+        if (tlsFingerprintProfileId.value) {
+          newExtra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+        } else {
+          delete newExtra.tls_fingerprint_profile_id
+        }
       } else {
         delete newExtra.enable_tls_fingerprint
+        delete newExtra.tls_fingerprint_profile_id
       }
 
       // Session ID masking setting
