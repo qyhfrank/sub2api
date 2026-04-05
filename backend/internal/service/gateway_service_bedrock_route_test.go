@@ -16,7 +16,7 @@ func TestForwardBedrockUsesRoutedInvocationTarget(t *testing.T) {
 	runtimeBedrockRoutePools = &bedrockRoutePoolRegistry{pools: make(map[string]*BedrockRoutePool)}
 	gin.SetMode(gin.TestMode)
 
-	ctx, _ := newSoraTestContext()
+	ctx, _ := newTestContext()
 	upstream := &queuedHTTPUpstream{
 		responses: []*http.Response{
 			newJSONResponse(http.StatusOK, `{"type":"message","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`),
@@ -54,7 +54,7 @@ func TestForwardBedrockLegacyTargetStaysUnchangedWhenRouteModeDisabled(t *testin
 	runtimeBedrockRoutePools = &bedrockRoutePoolRegistry{pools: make(map[string]*BedrockRoutePool)}
 	gin.SetMode(gin.TestMode)
 
-	ctx, _ := newSoraTestContext()
+	ctx, _ := newTestContext()
 	upstream := &queuedHTTPUpstream{
 		responses: []*http.Response{
 			newJSONResponse(http.StatusOK, `{"type":"message","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`),
@@ -88,7 +88,7 @@ func TestForwardBedrockAllRoutesQuota429RetriesNextRoute(t *testing.T) {
 	runtimeBedrockRoutePools = &bedrockRoutePoolRegistry{pools: make(map[string]*BedrockRoutePool)}
 	gin.SetMode(gin.TestMode)
 
-	ctx, _ := newSoraTestContext()
+	ctx, _ := newTestContext()
 	quotaResp := newJSONResponse(http.StatusTooManyRequests, `{"message":"Invocation denied because the daily quota was exceeded for this model in this region."}`)
 	quotaResp.Header.Set("x-amzn-errortype", "ServiceQuotaExceededException")
 	upstream := &queuedHTTPUpstream{
@@ -133,7 +133,7 @@ func TestForwardBedrockSingleRouteQuota429DoesNotFailover(t *testing.T) {
 	runtimeBedrockRoutePools = &bedrockRoutePoolRegistry{pools: make(map[string]*BedrockRoutePool)}
 	gin.SetMode(gin.TestMode)
 
-	ctx, recorder := newSoraTestContext()
+	ctx, recorder := newTestContext()
 	quotaResp := newJSONResponse(http.StatusTooManyRequests, `{"message":"Invocation denied because the daily quota was exceeded for this model in this region."}`)
 	quotaResp.Header.Set("x-amzn-errortype", "ServiceQuotaExceededException")
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{quotaResp}}

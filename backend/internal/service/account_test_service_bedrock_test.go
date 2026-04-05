@@ -12,7 +12,7 @@ func TestBedrockAccountTestUsesRouteTarget(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	t.Run("route enabled uses routed url and signer region", func(t *testing.T) {
-		ctx, recorder := newSoraTestContext()
+		ctx, recorder := newTestContext()
 		upstream := &queuedHTTPUpstream{responses: []*http.Response{
 			newJSONResponse(http.StatusOK, `{"content":[{"text":"bedrock ok"}]}`),
 		}}
@@ -44,7 +44,7 @@ func TestBedrockAccountTestUsesRouteTarget(t *testing.T) {
 	})
 
 	t.Run("route disabled keeps legacy target", func(t *testing.T) {
-		ctx, _ := newSoraTestContext()
+		ctx, _ := newTestContext()
 		upstream := &queuedHTTPUpstream{responses: []*http.Response{
 			newJSONResponse(http.StatusOK, `{"content":[{"text":"legacy ok"}]}`),
 		}}
@@ -71,7 +71,7 @@ func TestBedrockAccountTestUsesRouteTarget(t *testing.T) {
 	})
 
 	t.Run("invalid route policy returns clear error before upstream call", func(t *testing.T) {
-		ctx, recorder := newSoraTestContext()
+		ctx, recorder := newTestContext()
 		upstream := &queuedHTTPUpstream{}
 		account := &Account{
 			ID:          103,
@@ -100,7 +100,7 @@ func TestBedrockAccountTestUsesRouteTarget(t *testing.T) {
 
 	t.Run("account test does not advance all routes runtime selection", func(t *testing.T) {
 		runtimeBedrockRoutePools = &bedrockRoutePoolRegistry{pools: make(map[string]*BedrockRoutePool)}
-		ctx, _ := newSoraTestContext()
+		ctx, _ := newTestContext()
 		upstream := &queuedHTTPUpstream{responses: []*http.Response{
 			newJSONResponse(http.StatusOK, `{"content":[{"text":"pool ok"}]}`),
 		}}
