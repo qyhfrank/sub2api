@@ -46,7 +46,8 @@ WORKDIR /app
 COPY sub2api /app/sub2api
 
 # Copy runtime resources resolved by relative paths from the running binary.
-COPY backend/resources /app/resources
+COPY backend/resources/model-pricing/model_prices_and_context_window.json /app/resources/model-pricing/model_prices_and_context_window.json
+COPY backend/resources/model-pricing/model_prices_overrides.json /app/resources/model-pricing/model_prices_overrides.json
 
 # Create data directory
 RUN mkdir -p /app/data && chown -R sub2api:sub2api /app
