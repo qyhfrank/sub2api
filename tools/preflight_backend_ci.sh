@@ -9,7 +9,11 @@ LINT_CMD=(go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0 r
 echo "==> verify go version"
 (
   cd "$BACKEND_DIR"
-  go version | grep -q 'go1.26.1'
+  REQUIRED_GO=$(sed -n 's/^go //p' go.mod | head -1)
+  go version | grep -q "go${REQUIRED_GO}" || {
+    echo "go ${REQUIRED_GO} required, found $(go version)" >&2
+    exit 1
+  }
 )
 
 echo "==> golangci-lint"
