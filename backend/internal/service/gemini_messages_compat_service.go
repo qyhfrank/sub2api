@@ -717,6 +717,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}
 
 	var resp *http.Response
+	rateLimitMarked := false
+	rateLimitMarkedClass := gemini429ClassUnknown
 	signatureRetryStage := 0
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
@@ -844,8 +846,23 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				break
 			}
 			if resp.StatusCode == 429 {
-				// Mark as rate-limited early so concurrent requests avoid this account.
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				inspectBody := gemini429InspectionBody(account, respBody)
+				current429Class := parseGemini429Info(inspectBody).class
+				if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+					if s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel) {
+						rateLimitMarked = true
+						rateLimitMarkedClass = current429Class
+					}
+				}
+				if fastFailover, reason := shouldFastFailoverGemini429(inspectBody); fastFailover {
+					log.Printf("[Gemini 429] Account %d: fast failover reason=%s, skip in-account retry", account.ID, reason)
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break
+				}
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -892,9 +909,19 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		inspect429Body := respBody
+		if resp.StatusCode == http.StatusTooManyRequests {
+			inspect429Body = gemini429InspectionBody(account, respBody)
+		}
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
-			switch s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody) {
+			var policy ErrorPolicyResult
+			if resp.StatusCode == http.StatusTooManyRequests {
+				policy = s.checkGemini429ErrorPolicy(ctx, account, respBody)
+			} else {
+				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody)
+			}
+			switch policy {
 			case ErrorPolicySkipped:
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
@@ -902,7 +929,14 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				return nil, s.writeGeminiMappedError(c, account, http.StatusInternalServerError, upstreamReqID, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				if resp.StatusCode == http.StatusTooManyRequests {
+					current429Class := parseGemini429Info(inspect429Body).class
+					if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+						_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+					}
+				} else {
+					_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				}
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -932,7 +966,14 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			current429Class := parseGemini429Info(inspect429Body).class
+			if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+				_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+			}
+		} else {
+			_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		}
 		// 精确匹配服务端配置类 400 错误，触发 failover + 临时封禁
 		if resp.StatusCode == http.StatusBadRequest {
 			msg400 := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -1218,6 +1259,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	}
 
 	var resp *http.Response
+	rateLimitMarked := false
+	rateLimitMarkedClass := gemini429ClassUnknown
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
 		if err != nil {
@@ -1292,7 +1335,23 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				break
 			}
 			if resp.StatusCode == 429 {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				inspectBody := gemini429InspectionBody(account, respBody)
+				current429Class := parseGemini429Info(inspectBody).class
+				if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+					if s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel) {
+						rateLimitMarked = true
+						rateLimitMarkedClass = current429Class
+					}
+				}
+				if fastFailover, reason := shouldFastFailoverGemini429(inspectBody); fastFailover {
+					log.Printf("[Gemini 429] Account %d: fast failover reason=%s, skip in-account retry", account.ID, reason)
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break
+				}
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -1362,6 +1421,10 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		inspect429Body := respBody
+		if resp.StatusCode == http.StatusTooManyRequests {
+			inspect429Body = gemini429InspectionBody(account, respBody)
+		}
 		// Best-effort fallback for OAuth tokens missing AI Studio scopes when calling countTokens.
 		// This avoids Gemini SDKs failing hard during preflight token counting.
 		// Checked before error policy so it always works regardless of custom error codes.
@@ -1381,7 +1444,13 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
-			switch s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody) {
+			var policy ErrorPolicyResult
+			if resp.StatusCode == http.StatusTooManyRequests {
+				policy = s.checkGemini429ErrorPolicy(ctx, account, respBody)
+			} else {
+				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody)
+			}
+			switch policy {
 			case ErrorPolicySkipped:
 				respBody = unwrapIfNeeded(isOAuth, respBody)
 				contentType := resp.Header.Get("Content-Type")
@@ -1391,7 +1460,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				c.Data(http.StatusInternalServerError, contentType, respBody)
 				return nil, fmt.Errorf("gemini upstream error: %d (skipped by error policy)", resp.StatusCode)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				if resp.StatusCode == http.StatusTooManyRequests {
+					current429Class := parseGemini429Info(inspect429Body).class
+					if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+						_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+					}
+				} else {
+					_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				}
 				evBody := unwrapIfNeeded(isOAuth, respBody)
 				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1418,7 +1494,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			current429Class := parseGemini429Info(inspect429Body).class
+			if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+				_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+			}
+		} else {
+			_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		}
 		// 精确匹配服务端配置类 400 错误，触发 failover + 临时封禁
 		if resp.StatusCode == http.StatusBadRequest {
 			msg400 := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -1575,8 +1658,33 @@ func (s *GeminiMessagesCompatService) checkErrorPolicyInLoop(
 		Header:     resp.Header.Clone(),
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
-	policy := s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, body)
+	var policy ErrorPolicyResult
+	if resp.StatusCode == http.StatusTooManyRequests {
+		policy = s.checkGemini429ErrorPolicy(ctx, account, body)
+	} else {
+		policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, body)
+	}
 	return policy != ErrorPolicyNone, rebuilt
+}
+
+func (s *GeminiMessagesCompatService) checkGemini429ErrorPolicy(ctx context.Context, account *Account, body []byte) ErrorPolicyResult {
+	if s.rateLimitService == nil || account == nil {
+		return ErrorPolicyNone
+	}
+	inspectBody := gemini429InspectionBody(account, body)
+	if parseGemini429Info(inspectBody).class != gemini429ClassServerOverload {
+		return s.rateLimitService.CheckErrorPolicy(ctx, account, http.StatusTooManyRequests, body)
+	}
+	if account.IsCustomErrorCodesEnabled() {
+		if account.ShouldHandleErrorCode(http.StatusTooManyRequests) {
+			return ErrorPolicyNone
+		}
+		return ErrorPolicySkipped
+	}
+	if account.IsPoolMode() {
+		return ErrorPolicySkipped
+	}
+	return ErrorPolicyNone
 }
 
 func (s *GeminiMessagesCompatService) shouldRetryGeminiUpstreamError(account *Account, statusCode int) bool {
@@ -1626,7 +1734,7 @@ func sleepGeminiBackoff(attempt int) {
 
 var (
 	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
-	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
+	retryInRegex             = regexp.MustCompile(`(?i)(?:Please retry in|reset after) ([0-9.]+)s`)
 )
 
 func sanitizeUpstreamErrorMessage(msg string) string {
@@ -2741,23 +2849,42 @@ func asInt(v any) (int, bool) {
 	}
 }
 
-func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte) {
+func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string) bool {
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
-		return
+		return false
 	}
 	if s.rateLimitService != nil && (statusCode == 401 || statusCode == 403 || statusCode == 529) {
 		s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body)
-		return
+		return false
 	}
 	if statusCode != 429 {
-		return
+		return false
 	}
+	body = gemini429InspectionBody(account, body)
 
 	oauthType := account.GeminiOAuthType()
 	tierID := account.GeminiTierID()
 	projectID := strings.TrimSpace(account.GetCredential("project_id"))
 	isCodeAssist := account.IsGeminiCodeAssist()
+	info := parseGemini429Info(body)
+
+	if info.class == gemini429ClassServerOverload {
+		modelScope := strings.TrimSpace(requestedModel)
+		if account != nil && account.Type == AccountTypeAPIKey {
+			modelScope = account.GetMappedModel(requestedModel)
+		}
+		if modelScope != "" {
+			_ = s.accountRepo.SetModelRateLimit(ctx, account.ID, modelScope, time.Now().Add(10*time.Second))
+		}
+		logger.LegacyPrintf(
+			"service.gemini_messages_compat",
+			"[Gemini 429] Account %d overload/no-capacity for model=%s, set short model cooldown and skip account cooldown",
+			account.ID,
+			modelScope,
+		)
+		return false
+	}
 
 	resetAt := ParseGeminiRateLimitResetTime(body)
 	if resetAt == nil {
@@ -2783,7 +2910,7 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 			}
 		}
 		_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
-		return
+		return true
 	}
 
 	// 使用解析到的重置时间
@@ -2791,10 +2918,12 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetTime)
 	logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d rate limited until %v (oauth_type=%s, tier=%s)",
 		account.ID, resetTime, oauthType, tierID)
+	return true
 }
 
 // ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳
 func ParseGeminiRateLimitResetTime(body []byte) *int64 {
+	body = normalizeGemini429Body(body)
 	// 第一阶段：gjson 结构化提取
 	errMsg := gjson.GetBytes(body, "error.message").String()
 	if looksLikeGeminiDailyQuota(errMsg) {

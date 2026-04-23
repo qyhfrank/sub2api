@@ -4,8 +4,10 @@ package service
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -313,7 +315,7 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 					handleErrorCalled = false
 					goto verify
 				case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-					svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody)
+					_ = svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody, "")
 					handleErrorCalled = true
 					gotFailover = true
 					goto verify
@@ -321,7 +323,7 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 			}
 
 			// ErrorPolicyNone → original logic
-			svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody)
+			_ = svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody, "")
 			handleErrorCalled = true
 			if svc.shouldFailoverGeminiUpstreamError(statusCode) {
 				gotFailover = true
@@ -374,8 +376,198 @@ func TestGeminiErrorPolicy_NilRateLimitService(t *testing.T) {
 
 	// handleGeminiUpstreamError should not panic with nil rateLimitService
 	require.NotPanics(t, func() {
-		svc.handleGeminiUpstreamError(ctx, account, 500, http.Header{}, []byte(`error`))
+		_ = svc.handleGeminiUpstreamError(ctx, account, 500, http.Header{}, []byte(`error`), "")
 	})
+}
+
+func TestGeminiCheckErrorPolicyInLoop_Overload429BypassesMatchedPolicy(t *testing.T) {
+	repo := &geminiErrorPolicyRepo{}
+	rlSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: rlSvc,
+	}
+
+	account := &Account{
+		ID:       301,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(429)},
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"no capacity available"}}`)),
+	}
+
+	matched, rebuilt := svc.checkErrorPolicyInLoop(context.Background(), account, resp)
+	require.False(t, matched)
+	require.NotNil(t, rebuilt)
+}
+
+func TestGeminiCheckErrorPolicyInLoop_Overload429BypassesTempUnschedulable(t *testing.T) {
+	repo := &geminiErrorPolicyRepo{}
+	rlSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: rlSvc,
+	}
+
+	account := &Account{
+		ID:       303,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       float64(429),
+					"keywords":         []any{"capacity"},
+					"duration_minutes": float64(10),
+				},
+			},
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"no capacity available"}}`)),
+	}
+
+	matched, rebuilt := svc.checkErrorPolicyInLoop(context.Background(), account, resp)
+	require.False(t, matched)
+	require.NotNil(t, rebuilt)
+	require.Equal(t, 0, repo.setTempCalls)
+}
+
+func TestGeminiCheckErrorPolicyInLoop_WrappedOverload429BypassesTempUnschedulable(t *testing.T) {
+	repo := &geminiErrorPolicyRepo{}
+	rlSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: rlSvc,
+	}
+
+	account := &Account{
+		ID:       304,
+		Type:     AccountTypeOAuth,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"oauth_type":                 "code_assist",
+			"project_id":                 "demo-project",
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       float64(429),
+					"keywords":         []any{"capacity"},
+					"duration_minutes": float64(10),
+				},
+			},
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"response":{"error":{"message":"no capacity available"}}}`)),
+	}
+
+	matched, rebuilt := svc.checkErrorPolicyInLoop(context.Background(), account, resp)
+	require.False(t, matched)
+	require.NotNil(t, rebuilt)
+	require.Equal(t, 0, repo.setTempCalls)
+}
+
+func TestGeminiCheckErrorPolicyInLoop_Overload429PreservesSkippedPolicy(t *testing.T) {
+	repo := &geminiErrorPolicyRepo{}
+	rlSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: rlSvc,
+	}
+
+	account := &Account{
+		ID:       304,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(500)},
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"no capacity available"}}`)),
+	}
+
+	matched, rebuilt := svc.checkErrorPolicyInLoop(context.Background(), account, resp)
+	require.True(t, matched)
+	require.NotNil(t, rebuilt)
+}
+
+func TestGeminiCheckErrorPolicyInLoop_DailyQuota429StillMatchesPolicy(t *testing.T) {
+	repo := &geminiErrorPolicyRepo{}
+	rlSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: rlSvc,
+	}
+
+	account := &Account{
+		ID:       302,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(429)},
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"requests per day exceeded"}}`)),
+	}
+
+	matched, rebuilt := svc.checkErrorPolicyInLoop(context.Background(), account, resp)
+	require.True(t, matched)
+	require.NotNil(t, rebuilt)
+}
+
+func TestGeminiCheckErrorPolicyInLoop_Unknown429StillRunsPolicy(t *testing.T) {
+	repo := &geminiErrorPolicyRepo{}
+	rlSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: rlSvc,
+	}
+
+	account := &Account{
+		ID:       305,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(500)},
+		},
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+	}
+
+	matched, rebuilt := svc.checkErrorPolicyInLoop(context.Background(), account, resp)
+	require.True(t, matched)
+	require.NotNil(t, rebuilt)
 }
 
 // ---------------------------------------------------------------------------
