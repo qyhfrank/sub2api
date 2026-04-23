@@ -5157,13 +5157,12 @@ func (s *GatewayService) forwardBedrock(
 	reqStream := parsed.Stream
 	body := parsed.Body
 
-	region := bedrockRuntimeRegion(account)
-	mappedModel, ok := ResolveBedrockModelID(account, reqModel)
-	if !ok {
-		return nil, fmt.Errorf("unsupported bedrock model: %s", reqModel)
+	target, err := ResolveBedrockInvocationTarget(account, reqModel)
+	if err != nil {
+		return nil, err
 	}
-	if mappedModel != reqModel {
-		logger.LegacyPrintf("service.gateway", "[Bedrock] Model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
+	if target.InvocationModel != reqModel {
+		logger.LegacyPrintf("service.gateway", "[Bedrock] Model mapping: %s -> %s (account: %s)", reqModel, target.InvocationModel, account.Name)
 	}
 
 	betaHeader := ""
@@ -5172,12 +5171,12 @@ func (s *GatewayService) forwardBedrock(
 	}
 
 	// 准备请求体（注入 anthropic_version/anthropic_beta，移除 Bedrock 不支持的字段，清理 cache_control）
-	betaTokens, err := s.resolveBedrockBetaTokensForRequest(ctx, account, betaHeader, body, mappedModel)
+	betaTokens, err := s.resolveBedrockBetaTokensForRequest(ctx, account, betaHeader, body, target.InvocationModel)
 	if err != nil {
 		return nil, err
 	}
 
-	bedrockBody, err := PrepareBedrockRequestBodyWithTokens(body, mappedModel, betaTokens)
+	bedrockBody, err := PrepareBedrockRequestBodyWithTokens(body, target.InvocationModel, betaTokens)
 	if err != nil {
 		return nil, fmt.Errorf("prepare bedrock request body: %w", err)
 	}
@@ -5188,73 +5187,155 @@ func (s *GatewayService) forwardBedrock(
 	}
 
 	logger.LegacyPrintf("service.gateway", "[Bedrock] 命中 Bedrock 分支: account=%d name=%s model=%s->%s stream=%v",
-		account.ID, account.Name, reqModel, mappedModel, reqStream)
+		account.ID, account.Name, reqModel, target.InvocationModel, reqStream)
 
-	// 根据账号类型选择认证方式
-	var signer *BedrockSigner
-	var bedrockAPIKey string
-	if account.IsBedrockAPIKey() {
-		bedrockAPIKey = account.GetCredential("api_key")
-		if bedrockAPIKey == "" {
-			return nil, fmt.Errorf("api_key not found in bedrock credentials")
+	attemptedRoutes := make(map[BedrockRouteKey]struct{})
+	for {
+		// 根据账号类型选择认证方式
+		var signer *BedrockSigner
+		var bedrockAPIKey string
+		if account.IsBedrockAPIKey() {
+			bedrockAPIKey = account.GetCredential("api_key")
+			if bedrockAPIKey == "" {
+				return nil, fmt.Errorf("api_key not found in bedrock credentials")
+			}
+		} else {
+			signer, err = NewBedrockSignerFromAccountForRegion(account, target.RuntimeRegion)
+			if err != nil {
+				return nil, fmt.Errorf("create bedrock signer: %w", err)
+			}
 		}
-	} else {
-		signer, err = NewBedrockSignerFromAccount(account)
-		if err != nil {
-			return nil, fmt.Errorf("create bedrock signer: %w", err)
-		}
-	}
 
-	// 执行上游请求（含重试）
-	resp, err := s.executeBedrockUpstream(ctx, c, account, bedrockBody, mappedModel, region, reqStream, signer, bedrockAPIKey, proxyURL)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// 将 Bedrock 的 x-amzn-requestid 映射到 x-request-id，
-	// 使通用错误处理函数（handleErrorResponse、handleRetryExhaustedError）能正确提取 AWS request ID。
-	if awsReqID := resp.Header.Get("x-amzn-requestid"); awsReqID != "" && resp.Header.Get("x-request-id") == "" {
-		resp.Header.Set("x-request-id", awsReqID)
-	}
-
-	// 错误/failover 处理
-	if resp.StatusCode >= 400 {
-		return s.handleBedrockUpstreamErrors(ctx, resp, c, account)
-	}
-
-	// 响应处理
-	var usage *ClaudeUsage
-	var firstTokenMs *int
-	var clientDisconnect bool
-	if reqStream {
-		streamResult, err := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
+		// 执行上游请求（含重试）
+		resp, err := s.executeBedrockUpstream(ctx, c, account, bedrockBody, target.InvocationModel, target.RuntimeRegion, reqStream, signer, bedrockAPIKey, proxyURL)
 		if err != nil {
 			return nil, err
 		}
-		usage = streamResult.usage
-		firstTokenMs = streamResult.firstTokenMs
-		clientDisconnect = streamResult.clientDisconnect
-	} else {
-		usage, err = s.handleBedrockNonStreamingResponse(ctx, resp, c, account)
-		if err != nil {
-			return nil, err
+
+		// 将 Bedrock 的 x-amzn-requestid 映射到 x-request-id，
+		// 使通用错误处理函数（handleErrorResponse、handleRetryExhaustedError）能正确提取 AWS request ID。
+		if awsReqID := resp.Header.Get("x-amzn-requestid"); awsReqID != "" && resp.Header.Get("x-request-id") == "" {
+			resp.Header.Set("x-request-id", awsReqID)
 		}
+
+		// 错误/failover 处理
+		if resp.StatusCode >= 400 {
+			_, routeLocalQuota := inspectBedrockRouteLocalQuota429(resp)
+			if routeLocalQuota && target.Policy.Mode == "all_routes" && target.RouteKey != nil {
+				attemptedRoutes[*target.RouteKey] = struct{}{}
+				markBedrockRouteCooldown(account, target, bedrockRouteLocalQuotaCooldownUntil(time.Now()))
+
+				nextTarget, nextErr := ResolveBedrockInvocationTarget(account, reqModel)
+				if nextErr == nil && nextTarget.RouteKey != nil {
+					if _, seen := attemptedRoutes[*nextTarget.RouteKey]; !seen {
+						_ = resp.Body.Close()
+						target = nextTarget
+						continue
+					}
+				}
+			}
+
+			defer func() { _ = resp.Body.Close() }()
+			return s.handleBedrockUpstreamErrors(ctx, resp, c, account)
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+
+		// 响应处理
+		var usage *ClaudeUsage
+		var firstTokenMs *int
+		var clientDisconnect bool
+		if reqStream {
+			streamResult, err := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
+			if err != nil {
+				return nil, err
+			}
+			usage = streamResult.usage
+			firstTokenMs = streamResult.firstTokenMs
+			clientDisconnect = streamResult.clientDisconnect
+		} else {
+			usage, err = s.handleBedrockNonStreamingResponse(ctx, resp, c, account)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if usage == nil {
+			usage = &ClaudeUsage{}
+		}
+
+		return &ForwardResult{
+			RequestID:        resp.Header.Get("x-amzn-requestid"),
+			Usage:            *usage,
+			Model:            reqModel,
+			UpstreamModel:    target.InvocationModel,
+			Stream:           reqStream,
+			Duration:         time.Since(startTime),
+			FirstTokenMs:     firstTokenMs,
+			ClientDisconnect: clientDisconnect,
+		}, nil
 	}
-	if usage == nil {
-		usage = &ClaudeUsage{}
+}
+
+func inspectBedrockRouteLocalQuota429(resp *http.Response) ([]byte, bool) {
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
+		return nil, false
 	}
 
-	return &ForwardResult{
-		RequestID:        resp.Header.Get("x-amzn-requestid"),
-		Usage:            *usage,
-		Model:            reqModel,
-		UpstreamModel:    mappedModel,
-		Stream:           reqStream,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
-	}, nil
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	if isKnownBedrockRouteLocalQuota429(resp, body) {
+		return body, true
+	}
+	return body, false
+}
+
+func isKnownBedrockRouteLocalQuota429(resp *http.Response, body []byte) bool {
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+
+	errType := strings.ToLower(strings.TrimSpace(resp.Header.Get("x-amzn-errortype")))
+	if strings.Contains(errType, "servicequotaexceededexception") {
+		return true
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	raw := strings.ToLower(strings.TrimSpace(string(body)))
+	if strings.Contains(raw, "servicequotaexceededexception") {
+		return true
+	}
+	if strings.Contains(msg, "daily quota") || strings.Contains(raw, "daily quota") {
+		return true
+	}
+	if strings.Contains(msg, "service quota") || strings.Contains(raw, "service quota") {
+		return true
+	}
+	if (strings.Contains(msg, "quota exceeded") || strings.Contains(raw, "quota exceeded")) &&
+		(strings.Contains(msg, "region") || strings.Contains(raw, "region") || strings.Contains(msg, "daily") || strings.Contains(raw, "daily")) {
+		return true
+	}
+	return false
+}
+
+func bedrockRouteLocalQuotaCooldownUntil(now time.Time) int64 {
+	return now.Add(24 * time.Hour).Unix()
+}
+
+func markBedrockRouteCooldown(account *Account, target BedrockInvocationTarget, blockedUntil int64) {
+	if target.RouteKey == nil || target.Policy.Mode != "all_routes" {
+		return
+	}
+	routes := filterBedrockRoutesByScope(LookupBedrockRoutes(target.Support.CanonicalModel), target.Policy.Scope)
+	if len(routes) == 0 {
+		return
+	}
+	pool := runtimeBedrockRoutePools.getOrCreate(
+		routePoolRegistryKey(account, target.Support.CanonicalModel, target.Policy, target.Support.RuntimeRegion, target.Support.InvocationModel),
+		prioritizeBedrockRoutes(routes, target.Policy, target.Support.RuntimeRegion, target.Support.InvocationModel),
+	)
+	pool.MarkCooldown(*target.RouteKey, blockedUntil)
 }
 
 // executeBedrockUpstream 执行 Bedrock 上游请求（含重试逻辑）

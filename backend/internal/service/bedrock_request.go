@@ -137,23 +137,11 @@ func normalizeBedrockModelID(modelID string) (normalized string, shouldAdjustReg
 // It applies account model_mapping first, then default Bedrock aliases, and finally
 // adjusts Anthropic cross-region prefixes to match the account region.
 func ResolveBedrockModelID(account *Account, requestedModel string) (string, bool) {
-	if account == nil {
-		return "", false
-	}
-
-	mappedModel := account.GetMappedModel(requestedModel)
-	modelID, shouldAdjustRegion, ok := normalizeBedrockModelID(mappedModel)
+	support, ok := ResolveBedrockModelSupport(account, requestedModel)
 	if !ok {
 		return "", false
 	}
-	if shouldAdjustRegion {
-		targetRegion := bedrockRuntimeRegion(account)
-		if shouldForceBedrockGlobal(account) {
-			targetRegion = "global"
-		}
-		modelID = AdjustBedrockModelRegionPrefix(modelID, targetRegion)
-	}
-	return modelID, true
+	return support.InvocationModel, true
 }
 
 // BuildBedrockURL 构建 Bedrock InvokeModel 的 URL
