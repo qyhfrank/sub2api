@@ -2920,7 +2920,7 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	isCodeAssist := account.IsGeminiCodeAssist()
 	info := parseGemini429Info(body)
 
-	if info.class == gemini429ClassServerOverload {
+	if info.class == gemini429ClassServerOverload && oauthType != "google_one" {
 		modelScope := strings.TrimSpace(requestedModel)
 		if account != nil && account.Type == AccountTypeAPIKey {
 			modelScope = account.GetMappedModel(requestedModel)
