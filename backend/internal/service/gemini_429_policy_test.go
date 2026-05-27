@@ -25,7 +25,7 @@ func (s *accountRepoRateLimitSpy) SetRateLimited(ctx context.Context, id int64, 
 	return nil
 }
 
-func (s *accountRepoRateLimitSpy) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time) error {
+func (s *accountRepoRateLimitSpy) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time, _ ...string) error {
 	s.modelRateLimitCalls++
 	s.account = id
 	s.modelRateLimitScope = scope
