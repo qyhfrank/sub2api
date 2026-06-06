@@ -243,10 +243,10 @@ func TestForwardBedrockSingleRouteQuota429FallsBackToOuterFailover(t *testing.T)
 func mustParseBedrockRequest(t *testing.T, model string) *ParsedRequest {
 	t.Helper()
 	body := `{"model":"` + model + `","max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
-	parsed, err := ParseGatewayRequest([]byte(body), PlatformAnthropic)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(body)), PlatformAnthropic)
 	require.NoError(t, err)
 	require.Equal(t, model, parsed.Model)
 	require.False(t, parsed.Stream)
-	require.True(t, strings.Contains(string(parsed.Body), model))
+	require.True(t, strings.Contains(string(parsed.Body.Bytes()), model))
 	return parsed
 }
