@@ -1048,6 +1048,9 @@ func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, accoun
 	resetAt := time.Now().Add(cooldown)
 	slog.Warn("rate_limit_429_fallback_used", "account_id", account.ID, "platform", account.Platform, "reason", reason, "using_default", cooldown.String())
 	s.notifyAccountSchedulingBlocked(account, resetAt, "429_fallback")
+	if s.accountRepo == nil {
+		return
+	}
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 	}
