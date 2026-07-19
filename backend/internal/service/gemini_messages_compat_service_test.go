@@ -19,10 +19,11 @@ import (
 )
 
 type geminiCompatHTTPUpstreamStub struct {
-	response *http.Response
-	err      error
-	calls    int
-	lastReq  *http.Request
+	response     *http.Response
+	responseBody string
+	err          error
+	calls        int
+	lastReq      *http.Request
 }
 
 func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -35,6 +36,9 @@ func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, ac
 		return nil, fmt.Errorf("missing stub response")
 	}
 	resp := *s.response
+	if s.responseBody != "" {
+		resp.Body = io.NopCloser(strings.NewReader(s.responseBody))
+	}
 	return &resp, nil
 }
 
@@ -168,6 +172,64 @@ func TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE(t *test
 	require.Contains(t, out, `"content":"lo"`)
 	require.Contains(t, out, `"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}`)
 	require.Contains(t, out, "data: [DONE]")
+}
+
+func TestGeminiForwardAsChatCompletions_ServerOverloadKeepsShortModelCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const upstreamBody = `{"error":{"message":"no capacity available"}}`
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       http.NoBody,
+		},
+		responseBody: upstreamBody,
+	}
+	repo := &accountRepoRateLimitSpy{}
+	cfg := &config.Config{}
+	svc := &GeminiMessagesCompatService{
+		accountRepo:      repo,
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
+		httpUpstream:     httpStub,
+		cfg:              cfg,
+	}
+	account := &Account{
+		ID:       103,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "gemini-api-key",
+			"model_mapping": map[string]any{
+				"gemini-2.5-pro": "gemini-2.5-pro-002",
+			},
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       float64(http.StatusTooManyRequests),
+					"keywords":         []any{"no capacity available"},
+					"duration_minutes": float64(10),
+				},
+			},
+		},
+		Concurrency: 1,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	startedAt := time.Now()
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Greater(t, repo.modelRateLimitCalls, 0)
+	require.Equal(t, "gemini-2.5-pro-002", repo.modelRateLimitScope)
+	require.True(t, repo.resetAt.Before(startedAt.Add(time.Minute)), "server overload must not inherit the 10-minute temporary rule")
 }
 
 // TestConvertClaudeToolsToGeminiTools_CustomType 测试custom类型工具转换

@@ -869,7 +869,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		// 错误策略优先：匹配则跳过重试直接处理。
-		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp); matched {
+		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
 			resp = rebuilt
 			break
 		} else {
@@ -960,9 +960,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		if s.rateLimitService != nil {
 			var policy ErrorPolicyResult
 			if resp.StatusCode == http.StatusTooManyRequests {
-				policy = s.checkGemini429ErrorPolicy(ctx, account, respBody)
+				policy = s.checkGemini429ErrorPolicy(ctx, account, respBody, mappedModel)
 			} else {
-				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody)
+				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
 			}
 			switch policy {
 			case ErrorPolicySkipped:
@@ -972,13 +972,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				return nil, s.writeGeminiMappedError(c, account, http.StatusInternalServerError, upstreamReqID, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				if resp.StatusCode == http.StatusTooManyRequests {
-					current429Class := parseGemini429Info(inspect429Body).class
-					if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+				if policy == ErrorPolicyMatched {
+					if resp.StatusCode == http.StatusTooManyRequests {
+						current429Class := parseGemini429Info(inspect429Body).class
+						if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+							_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+						}
+					} else {
 						_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 					}
-				} else {
-					_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 				}
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
@@ -1379,7 +1381,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		// 错误策略优先：匹配则跳过重试直接处理。
-		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp); matched {
+		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
 			resp = rebuilt
 			break
 		} else {
@@ -1510,9 +1512,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		if s.rateLimitService != nil {
 			var policy ErrorPolicyResult
 			if resp.StatusCode == http.StatusTooManyRequests {
-				policy = s.checkGemini429ErrorPolicy(ctx, account, respBody)
+				policy = s.checkGemini429ErrorPolicy(ctx, account, respBody, mappedModel)
 			} else {
-				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody)
+				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
 			}
 			switch policy {
 			case ErrorPolicySkipped:
@@ -1525,13 +1527,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				c.Data(http.StatusInternalServerError, contentType, respBody)
 				return nil, fmt.Errorf("gemini upstream error: %d (skipped by error policy)", resp.StatusCode)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				if resp.StatusCode == http.StatusTooManyRequests {
-					current429Class := parseGemini429Info(inspect429Body).class
-					if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+				if policy == ErrorPolicyMatched {
+					if resp.StatusCode == http.StatusTooManyRequests {
+						current429Class := parseGemini429Info(inspect429Body).class
+						if shouldProcessGemini429Mark(rateLimitMarked, rateLimitMarkedClass, current429Class) {
+							_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+						}
+					} else {
 						_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 					}
-				} else {
-					_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 				}
 				evBody := unwrapIfNeeded(isOAuth, respBody)
 				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
@@ -1714,7 +1718,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 // 返回 true 表示策略已匹配（调用者应 break），resp 已重建可直接使用。
 // 返回 false 表示 ErrorPolicyNone，resp 已重建，调用者继续走重试逻辑。
 func (s *GeminiMessagesCompatService) checkErrorPolicyInLoop(
-	ctx context.Context, account *Account, resp *http.Response,
+	ctx context.Context, account *Account, resp *http.Response, mappedModel string,
 ) (matched bool, rebuilt *http.Response) {
 	if resp.StatusCode < 400 || s.rateLimitService == nil {
 		return false, resp
@@ -1728,20 +1732,20 @@ func (s *GeminiMessagesCompatService) checkErrorPolicyInLoop(
 	}
 	var policy ErrorPolicyResult
 	if resp.StatusCode == http.StatusTooManyRequests {
-		policy = s.checkGemini429ErrorPolicy(ctx, account, body)
+		policy = s.checkGemini429ErrorPolicy(ctx, account, body, mappedModel)
 	} else {
-		policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, body)
+		policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, body, mappedModel)
 	}
 	return policy != ErrorPolicyNone, rebuilt
 }
 
-func (s *GeminiMessagesCompatService) checkGemini429ErrorPolicy(ctx context.Context, account *Account, body []byte) ErrorPolicyResult {
+func (s *GeminiMessagesCompatService) checkGemini429ErrorPolicy(ctx context.Context, account *Account, body []byte, mappedModel string) ErrorPolicyResult {
 	if s.rateLimitService == nil || account == nil {
 		return ErrorPolicyNone
 	}
 	inspectBody := gemini429InspectionBody(account, body)
 	if parseGemini429Info(inspectBody).class != gemini429ClassServerOverload {
-		return s.rateLimitService.CheckErrorPolicy(ctx, account, http.StatusTooManyRequests, body)
+		return s.rateLimitService.CheckErrorPolicy(ctx, account, http.StatusTooManyRequests, body, mappedModel)
 	}
 	if account.IsCustomErrorCodesEnabled() {
 		if account.ShouldHandleErrorCode(http.StatusTooManyRequests) {
