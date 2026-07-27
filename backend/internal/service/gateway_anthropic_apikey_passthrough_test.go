@@ -190,6 +190,50 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
 }
 
+func TestGatewayService_ForwardFiltersWebSearchHistoryBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		passthrough bool
+	}{
+		{name: "regular_forward"},
+		{name: "api_key_passthrough", passthrough: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+			body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"messages":[{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_ws_abc","name":"web_search","input":{"query":"q"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_ws_abc","content":[]},{"type":"text","text":"summary"}]},{"role":"user","content":[{"type":"text","text":"continue"}]}]}`)
+			parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6"}
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","usage":{"input_tokens":1,"output_tokens":1}}`)),
+			}}
+			cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+			svc := &GatewayService{
+				cfg:                  cfg,
+				responseHeaderFilter: compileResponseHeaderFilter(cfg),
+				httpUpstream:         upstream,
+				rateLimitService:     &RateLimitService{},
+				deferredService:      &DeferredService{},
+			}
+			account := newAnthropicAPIKeyAccountForTest()
+			if !tc.passthrough {
+				account.Extra = nil
+			}
+
+			result, err := svc.Forward(context.Background(), c, account, parsed)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotContains(t, string(upstream.lastBody), `"server_tool_use"`)
+			require.NotContains(t, string(upstream.lastBody), `"web_search_tool_result"`)
+			require.Contains(t, string(upstream.lastBody), `"summary"`)
+		})
+	}
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
