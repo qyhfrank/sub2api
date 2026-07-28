@@ -186,6 +186,21 @@ func selectAllRoutesBedrockTarget(account *Account, canonicalModel string, polic
 	return route, nil
 }
 
+func markBedrockRouteCooldown(account *Account, target BedrockInvocationTarget, blockedUntil int64) {
+	if target.RouteKey == nil || target.Policy.Mode != "all_routes" {
+		return
+	}
+	routes := filterBedrockRoutesByScope(LookupBedrockRoutes(target.Support.CanonicalModel), target.Policy.Scope)
+	if len(routes) == 0 {
+		return
+	}
+	pool := runtimeBedrockRoutePools.getOrCreate(
+		routePoolRegistryKey(account, target.Support.CanonicalModel, target.Policy, target.Support.RuntimeRegion, target.Support.InvocationModel),
+		prioritizeBedrockRoutes(routes, target.Policy, target.Support.RuntimeRegion, target.Support.InvocationModel),
+	)
+	pool.MarkCooldown(*target.RouteKey, blockedUntil)
+}
+
 func prioritizeBedrockRoutes(routes []BedrockRoute, policy BedrockRoutePolicy, baselineRuntimeRegion, baselineInvocationModel string) []BedrockRoute {
 	ordered := make([]BedrockRoute, len(routes))
 	copy(ordered, routes)

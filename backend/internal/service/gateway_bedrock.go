@@ -236,21 +236,6 @@ func bedrockRouteLocalQuotaCooldownUntil(now time.Time) int64 {
 	return now.Add(24 * time.Hour).Unix()
 }
 
-func markBedrockRouteCooldown(account *Account, target BedrockInvocationTarget, blockedUntil int64) {
-	if target.RouteKey == nil || target.Policy.Mode != "all_routes" {
-		return
-	}
-	routes := filterBedrockRoutesByScope(LookupBedrockRoutes(target.Support.CanonicalModel), target.Policy.Scope)
-	if len(routes) == 0 {
-		return
-	}
-	pool := runtimeBedrockRoutePools.getOrCreate(
-		routePoolRegistryKey(account, target.Support.CanonicalModel, target.Policy, target.Support.RuntimeRegion, target.Support.InvocationModel),
-		prioritizeBedrockRoutes(routes, target.Policy, target.Support.RuntimeRegion, target.Support.InvocationModel),
-	)
-	pool.MarkCooldown(*target.RouteKey, blockedUntil)
-}
-
 // executeBedrockUpstream 执行 Bedrock 上游请求（含重试逻辑）
 func (s *GatewayService) executeBedrockUpstream(
 	ctx context.Context,
