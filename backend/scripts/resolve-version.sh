@@ -20,4 +20,17 @@ if command -v git >/dev/null 2>&1; then
   fi
 fi
 
-printf '%s\n' "$(tr -d '\r\n' < "$VERSION_FILE")"
+BASE_VERSION="$(tr -d '\r\n' < "$VERSION_FILE")"
+if [ -z "$BASE_VERSION" ]; then
+  BASE_VERSION="0.0.0"
+fi
+
+COMMIT_SUFFIX=""
+if command -v git >/dev/null 2>&1; then
+  SHORT_COMMIT="$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  if [ -n "$SHORT_COMMIT" ]; then
+    COMMIT_SUFFIX="+$SHORT_COMMIT"
+  fi
+fi
+
+printf '%s-fork.dev%s\n' "$BASE_VERSION" "$COMMIT_SUFFIX"

@@ -37,6 +37,8 @@ var (
 	BuildType = "source" // "source" for manual builds, "release" for CI builds (set by ldflags)
 )
 
+const sourceBuildVersionSuffix = "-fork.dev"
+
 func init() {
 	// 如果 Version 已通过 ldflags 注入（例如 -X main.Version=...），则不要覆盖。
 	if strings.TrimSpace(Version) != "" {
@@ -46,7 +48,10 @@ func init() {
 	// 默认从 embedded VERSION 文件读取版本号（编译期打包进二进制）。
 	Version = strings.TrimSpace(embeddedVersion)
 	if Version == "" {
-		Version = "0.0.0-dev"
+		Version = "0.0.0"
+	}
+	if BuildType == "source" {
+		Version += sourceBuildVersionSuffix
 	}
 }
 
