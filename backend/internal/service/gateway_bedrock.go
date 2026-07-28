@@ -1,7 +1,7 @@
 package service
 
-// 本文件由 gateway_service.go 纯移动拆分而来：Bedrock 上游转发（CC 兼容转换、
-// 请求构建、错误处理与非流式响应）。仅做代码搬迁，无任何行为变更。
+// Bedrock gateway owner：负责 CC 兼容转换、请求构建、上游转发与响应处理。
+// all_routes 配额 failover 在此编排；route-pool 状态由 bedrock_route_runtime.go 管理。
 
 import (
 	"bytes"
