@@ -199,7 +199,8 @@ func TestGeminiForwardAsChatCompletions_ServerOverloadKeepsShortModelCooldown(t 
 		Platform: PlatformGemini,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
-			"api_key": "gemini-api-key",
+			"api_key":   "gemini-api-key",
+			"pool_mode": true,
 			"model_mapping": map[string]any{
 				"gemini-2.5-pro": "gemini-2.5-pro-002",
 			},

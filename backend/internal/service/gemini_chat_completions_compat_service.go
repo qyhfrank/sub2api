@@ -219,9 +219,9 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
 			}
 		}
-		// 与 messages 兼容层一致：只有 None / Matched 才走账号状态处理。
-		// Skipped（池模式、或自定义错误码未命中）与 TempUnscheduled 已由策略层裁决完毕。
-		if policy == ErrorPolicyNone || policy == ErrorPolicyMatched {
+		if policy == ErrorPolicyNone || policy == ErrorPolicyMatched ||
+			(policy == ErrorPolicySkipped && resp.StatusCode == http.StatusTooManyRequests &&
+				parseGemini429Info(gemini429InspectionBody(account, respBody)).class == gemini429ClassServerOverload) {
 			_ = s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 		}
 		evBody := unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody)
